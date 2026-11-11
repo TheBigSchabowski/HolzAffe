@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">HolzAffe</string>
+    <string name="gate_service_label">HolzAffe App-Sperre</string>
+    <string name="gate_service_description">Erkennt, wenn eine gesperrte App geöffnet wird, und zeigt davor die Akkord-Challenge. Es werden keine Bildschirminhalte gelesen.</string>
+</resources>
