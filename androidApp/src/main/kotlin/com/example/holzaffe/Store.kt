@@ -12,6 +12,10 @@ class Store(context: Context) : Scores {
         get() = prefs.getInt("highScore", 0)
         set(v) = prefs.edit().putInt("highScore", v).apply()
 
+    override var streak: Int
+        get() = prefs.getInt("streak", 0)
+        set(v) = prefs.edit().putInt("streak", v).apply()
+
     override var bestStreak: Int
         get() = prefs.getInt("bestStreak", 0)
         set(v) = prefs.edit().putInt("bestStreak", v).apply()

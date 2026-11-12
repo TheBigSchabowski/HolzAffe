@@ -127,6 +127,9 @@ interface Scores {
     /** Most correct answers in one 1:30 run. */
     var highScore: Int
 
+    /** Correct answers in a row right now; carries over between runs and app starts until a miss. */
+    var streak: Int
+
     /** Longest run of consecutive correct answers ever. */
     var bestStreak: Int
 
