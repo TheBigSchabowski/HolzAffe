@@ -138,7 +138,7 @@ private fun Home(scores: Scores, onRun: () -> Unit, extra: @Composable ColumnSco
         Spacer(Modifier.height(12.dp))
         Text("All-time High", color = MaterialTheme.colorScheme.primary)
         Text("${scores.highScore}", fontSize = 84.sp, fontWeight = FontWeight.Bold)
-        Text("Längste Serie ${scores.bestStreak}")
+        Text("Aktuelle Serie ${scores.streak} · längste Serie ${scores.bestStreak}")
         Button(onClick = onRun, modifier = Modifier.fillMaxWidth().height(64.dp)) {
             Text("Run starten", fontSize = 22.sp)
         }
@@ -165,8 +165,9 @@ private fun Run(scores: Scores, onExit: () -> Unit) {
     var round by remember { mutableIntStateOf(0) } // bumping it restarts the run
     var left by remember(round) { mutableIntStateOf(RUN_SECONDS) }
     var score by remember(round) { mutableIntStateOf(0) }
-    var streak by remember(round) { mutableIntStateOf(0) }
-    var bestStreak by remember(round) { mutableIntStateOf(0) }
+    // The streak carries over from earlier runs; only a miss resets it.
+    var streak by remember(round) { mutableIntStateOf(scores.streak) }
+    var bestStreak by remember(round) { mutableIntStateOf(streak) }
     var errors by remember(round) { mutableIntStateOf(0) }
     val previousBest = remember(round) { scores.highScore }
     val previousStreak = remember(round) { scores.bestStreak }
@@ -215,7 +216,7 @@ private fun Run(scores: Scores, onExit: () -> Unit) {
                 color = if (score > previousBest) Good else MaterialTheme.colorScheme.onSurface,
             )
             Text(
-                "Längste Serie in diesem Run: $bestStreak" + if (bestStreak > previousStreak) " – Rekord!" else "",
+                "Längste Serie: $bestStreak" + if (bestStreak > previousStreak) " – Rekord!" else "",
                 color = if (bestStreak > previousStreak) Good else MaterialTheme.colorScheme.onSurface,
             )
             Spacer(Modifier.height(24.dp))
@@ -233,9 +234,11 @@ private fun Run(scores: Scores, onExit: () -> Unit) {
                         if (streak > bestStreak) bestStreak = streak
                         // Saved per answer so leaving mid-run keeps a record.
                         if (score > scores.highScore) scores.highScore = score
+                        scores.streak = streak
                         if (streak > scores.bestStreak) scores.bestStreak = streak
                     } else {
                         streak = 0
+                        scores.streak = 0
                         errors++
                     }
                 })

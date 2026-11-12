@@ -9,8 +9,9 @@ sperren, bis du ein paar Folgen richtig erkannt hast.
 - **1:30 Zeit**, so viele Akkordfolgen wie möglich.
 - Der erste Akkord ist immer die Tonika (`I` oder `i`), der zweite wechselt. Dur: `ii iii IV V vi`,
   Moll: `III iv IV v V VI VII`. Beide Akkorde kommen in zufälliger Umkehrung und Tonart.
-- Gespeichert werden das **All-time High** (Richtige in einem Run) und die **längste Serie**
-  richtiger Antworten in Folge.
+- Gespeichert werden das **All-time High** (Richtige in einem Run), die **aktuelle Serie**
+  richtiger Antworten in Folge und die **längste Serie**. Die aktuelle Serie läuft über Runs
+  und App-Neustarts weiter, bis eine Antwort falsch ist.
 - Optional endet ein Run nach einer einstellbaren Zahl von Fehlern (Standard: aus).
 
 ## App-Sperre (nur Android)
@@ -36,6 +37,6 @@ Kotlin Multiplatform mit Compose: `shared` (Spiel, Synthesizer, Oberfläche), `a
 ./gradlew :shared:desktopTest          # Tests
 ./gradlew :desktopApp:run              # Desktop starten
 ./gradlew :androidApp:assembleRelease  # APK
-./gradlew :desktopApp:packageDmg       # DMG (auf dem Mac)
+./gradlew :desktopApp:packageDmg       # DMG (auf dem Mac; bei einem Release baut es GitHub Actions)
 ./tools/build-linux.sh                 # .deb + .tar.gz (unter Linux)
 ```

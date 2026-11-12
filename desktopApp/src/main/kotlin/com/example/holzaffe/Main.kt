@@ -17,6 +17,9 @@ private class DesktopScores : Scores {
     override var highScore: Int
         get() = prefs.getInt("highScore", 0)
         set(v) = prefs.putInt("highScore", v)
+    override var streak: Int
+        get() = prefs.getInt("streak", 0)
+        set(v) = prefs.putInt("streak", v)
     override var bestStreak: Int
         get() = prefs.getInt("bestStreak", 0)
         set(v) = prefs.putInt("bestStreak", v)
