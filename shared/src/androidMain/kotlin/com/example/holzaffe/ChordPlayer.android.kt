@@ -8,9 +8,13 @@ actual object ChordPlayer {
     private var track: AudioTrack? = null
 
     @Synchronized
-    actual fun play(chords: List<List<Int>>) {
+    actual fun play(chords: List<List<Int>>) = playPcm(Synth.render(chords))
+
+    @Synchronized
+    actual fun playArpeggiated(chords: List<List<Int>>) = playPcm(Synth.renderArpeggiated(chords))
+
+    private fun playPcm(pcm: ShortArray) {
         stop()
-        val pcm = Synth.render(chords)
         val t = AudioTrack.Builder()
             .setAudioAttributes(
                 AudioAttributes.Builder()

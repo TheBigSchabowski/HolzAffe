@@ -24,6 +24,27 @@ class Store(context: Context) : Scores {
         get() = prefs.getInt("maxErrors", 0)
         set(v) = prefs.edit().putInt("maxErrors", v).apply()
 
+    override var reviewQueue: String
+        get() = prefs.getString("reviewQueue", "").orEmpty()
+        set(v) = prefs.edit().putString("reviewQueue", v).apply()
+
+    override var gameMode: GameMode
+        get() = GameMode.fromKey(prefs.getString("gameMode", null))
+        set(v) = prefs.edit().putString("gameMode", v.key).apply()
+
+    override fun highScore(mode: GameMode): Int = prefs.getInt(highScoreKey(mode), 0)
+
+    override fun setHighScore(mode: GameMode, value: Int) {
+        prefs.edit().putInt(highScoreKey(mode), value).apply()
+    }
+
+    var gateMode: GameMode
+        get() = GameMode.fromKey(prefs.getString("gateMode", null))
+        set(v) = prefs.edit().putString("gateMode", v.key).apply()
+
+    private fun highScoreKey(mode: GameMode): String =
+        if (mode == GameMode.DEGREES) "highScore" else "highScore:${mode.key}"
+
     var blocked: Set<String>
         get() = prefs.getStringSet("blocked", null) ?: setOf("com.whatsapp")
         set(v) = prefs.edit().putStringSet("blocked", v).apply()

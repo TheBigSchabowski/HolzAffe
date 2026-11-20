@@ -7,24 +7,45 @@ import kotlin.math.pow
 import kotlin.math.sin
 import kotlin.random.Random
 
+/** Selectable ear-training modes; [MIX] draws from all four [PLAYABLE] modes. */
+enum class GameMode(val key: String, val label: String) {
+    DEGREES("degrees", "Stufen"),
+    CHORD_TYPES("types", "Akkordtypen"),
+    CADENCES("cadences", "Kadenzen"),
+    INVERSIONS("inversions", "Umkehrungen"),
+    MIX("mix", "Mix");
+
+    companion object {
+        val PLAYABLE: List<GameMode> = listOf(DEGREES, CHORD_TYPES, CADENCES, INVERSIONS)
+        fun fromKey(key: String?): GameMode = entries.firstOrNull { it.key == key } ?: DEGREES
+    }
+}
+
 /** A chord as a scale degree: semitones above the tonic plus its triad intervals. */
 data class Degree(val label: String, val root: Int, val intervals: List<Int>)
 
 private val MAJ = listOf(0, 4, 7)
 private val MIN = listOf(0, 3, 7)
+private val DIM = listOf(0, 3, 6)
+private val AUG = listOf(0, 4, 8)
 
 private val MAJOR_TONIC = Degree("I", 0, MAJ)
 private val MINOR_TONIC = Degree("i", 0, MIN)
 
-private val MAJOR_TARGETS = listOf(
+internal val MAJOR_TARGETS = listOf(
     Degree("ii", 2, MIN),
     Degree("iii", 4, MIN),
     Degree("IV", 5, MAJ),
+    Degree("iv", 5, MIN),
     Degree("V", 7, MAJ),
+    Degree("♭VI", 8, MAJ),
     Degree("vi", 9, MIN),
+    Degree("♭VII", 10, MAJ),
+    Degree("vii°", 11, DIM),
 )
 
-private val MINOR_TARGETS = listOf(
+internal val MINOR_TARGETS = listOf(
+    Degree("ii°", 2, DIM),
     Degree("III", 3, MAJ),
     Degree("iv", 5, MIN),
     Degree("IV", 5, MAJ),
@@ -32,34 +53,225 @@ private val MINOR_TARGETS = listOf(
     Degree("V", 7, MAJ),
     Degree("VI", 8, MAJ),
     Degree("VII", 10, MAJ),
+    Degree("vii°", 11, DIM),
 )
 
-/** One question: two chords (as MIDI note lists) and three answer labels. */
+internal data class ChordType(val id: String, val label: String, val intervals: List<Int>)
+
+internal val CHORD_TYPES = listOf(
+    ChordType("Dur", "Dur", MAJ),
+    ChordType("Moll", "Moll", MIN),
+    ChordType("dim", "dim", DIM),
+    ChordType("aug", "aug", AUG),
+    ChordType("sus2", "sus2", listOf(0, 2, 7)),
+    ChordType("sus4", "sus4", listOf(0, 5, 7)),
+    ChordType("maj7", "maj7", listOf(0, 4, 7, 11)),
+    ChordType("7", "7", listOf(0, 4, 7, 10)),
+    ChordType("m7", "m7", listOf(0, 3, 7, 10)),
+)
+
+/** A concrete item from any of the four playable ear-training modes. */
+sealed interface Exercise {
+    val id: String
+    val mode: GameMode
+}
+
+/** Mode 1: Two-chord progression starting on the tonic. */
+data class Progression(val minor: Boolean, val target: Degree) : Exercise {
+    val tonic: Degree get() = if (minor) MINOR_TONIC else MAJOR_TONIC
+    override val id: String get() = "S:${tonic.label}:${target.label}"
+    override val mode: GameMode get() = GameMode.DEGREES
+}
+
+/** Mode 2: Recognizing chord quality / extension in isolation. */
+@ConsistentCopyVisibility
+data class ChordTypeExercise internal constructor(internal val type: ChordType) : Exercise {
+    override val id: String get() = "T:${type.id}"
+    override val mode: GameMode get() = GameMode.CHORD_TYPES
+}
+
+/** Mode 3: Three-chord cadence starting on the tonic. */
+data class Cadence(val minor: Boolean, val second: Degree, val third: Degree) : Exercise {
+    val tonic: Degree get() = if (minor) MINOR_TONIC else MAJOR_TONIC
+    val choiceLabel: String get() = "${tonic.label} → ${second.label} → ${third.label}"
+    override val id: String get() = "K:${tonic.label}:${second.label}-${third.label}"
+    override val mode: GameMode get() = GameMode.CADENCES
+}
+
+/** Mode 4: Recognizing triad quality and inversion together. */
+data class InversionExercise(val quality: String, val intervals: List<Int>, val inversion: Int) : Exercise {
+    private val invLabel: String
+        get() = when (inversion) {
+            0 -> "Grund"
+            1 -> "1. Umk"
+            else -> "2. Umk"
+        }
+    val choiceLabel: String get() = "$quality · $invLabel"
+    override val id: String get() = "U:$quality:$inversion"
+    override val mode: GameMode get() = GameMode.INVERSIONS
+}
+
+private fun majorDegree(label: String): Degree = MAJOR_TARGETS.first { it.label == label }
+private fun minorDegree(label: String): Degree = MINOR_TARGETS.first { it.label == label }
+
+internal val MAJOR_CADENCES: List<Cadence> = listOf(
+    "IV" to "V",
+    "V" to "vi",
+    "vi" to "IV",
+    "ii" to "V",
+    "V" to "IV",
+    "iii" to "IV",
+    "IV" to "vi",
+    "♭VII" to "IV",
+    "IV" to "iv",
+).map { (a, b) -> Cadence(minor = false, second = majorDegree(a), third = majorDegree(b)) }
+
+internal val MINOR_CADENCES: List<Cadence> = listOf(
+    "iv" to "V",
+    "VI" to "VII",
+    "VII" to "VI",
+    "VI" to "III",
+    "iv" to "VII",
+    "III" to "VII",
+    "ii°" to "V",
+    "v" to "VI",
+    "IV" to "VII",
+).map { (a, b) -> Cadence(minor = true, second = minorDegree(a), third = minorDegree(b)) }
+
+internal val CHORD_TYPE_EXERCISES: List<ChordTypeExercise> = CHORD_TYPES.map { ChordTypeExercise(it) }
+
+internal val INVERSION_EXERCISES: List<InversionExercise> = listOf(
+    "Dur" to MAJ,
+    "Moll" to MIN,
+    "dim" to DIM,
+).flatMap { (quality, intervals) ->
+    (0..2).map { inv -> InversionExercise(quality = quality, intervals = intervals, inversion = inv) }
+}
+
+val ALL_PROGRESSIONS: List<Progression> =
+    MAJOR_TARGETS.map { Progression(minor = false, target = it) } +
+        MINOR_TARGETS.map { Progression(minor = true, target = it) }
+
+val EXERCISES_BY_MODE: Map<GameMode, List<Exercise>> = mapOf(
+    GameMode.DEGREES to ALL_PROGRESSIONS,
+    GameMode.CHORD_TYPES to CHORD_TYPE_EXERCISES,
+    GameMode.CADENCES to (MAJOR_CADENCES + MINOR_CADENCES),
+    GameMode.INVERSIONS to INVERSION_EXERCISES,
+)
+
+val ALL_EXERCISES: List<Exercise> = GameMode.PLAYABLE.flatMap { EXERCISES_BY_MODE.getValue(it) }
+
+private val EXERCISE_BY_ID: Map<String, Exercise> = ALL_EXERCISES.associateBy { it.id }
+
+/**
+ * One question: MIDI chord voicings, 9 answer labels, the correct index,
+ * the underlying [Exercise.id], its [GameMode], and a short UI prompt.
+ * Intentionally a plain class so assigning a fresh question always retriggers playback.
+ */
 class Question(
     val chords: List<List<Int>>,
     val choices: List<String>,
     val correct: Int,
+    val progressionId: String,
+    val mode: GameMode,
+    val prompt: String,
 )
 
 object QuestionFactory {
-    /**
-     * The progression always starts on the tonic (I or i), since without that anchor
-     * a two-chord progression is ambiguous (IV→I sounds like I→V). All three choices
-     * share the mode, so the first chord's quality does not give the answer away.
-     */
-    fun next(rnd: Random = Random): Question {
-        val minor = rnd.nextBoolean()
-        val tonic = if (minor) MINOR_TONIC else MAJOR_TONIC
-        val options = (if (minor) MINOR_TARGETS else MAJOR_TARGETS).shuffled(rnd).take(3)
-        val correct = rnd.nextInt(3)
+    const val CHOICE_COUNT = 9
+
+    fun next(mode: GameMode = GameMode.DEGREES, rnd: Random = Random): Question {
+        val resolved = if (mode == GameMode.MIX) GameMode.PLAYABLE[rnd.nextInt(GameMode.PLAYABLE.size)] else mode
+        val pool = EXERCISES_BY_MODE.getValue(resolved)
+        return forExercise(pool[rnd.nextInt(pool.size)], rnd)
+    }
+
+    /** Builds a question for a specific [exercise] in a random key and voicing. */
+    fun forExercise(exercise: Exercise, rnd: Random = Random): Question = when (exercise) {
+        is Progression -> buildProgression(exercise, rnd)
+        is ChordTypeExercise -> buildChordType(exercise, rnd)
+        is Cadence -> buildCadence(exercise, rnd)
+        is InversionExercise -> buildInversion(exercise, rnd)
+    }
+
+    fun exerciseById(id: String): Exercise? = EXERCISE_BY_ID[id]
+
+    fun progressionById(id: String): Progression? = EXERCISE_BY_ID[id] as? Progression
+
+    private fun buildProgression(progression: Progression, rnd: Random): Question {
+        val targets = if (progression.minor) MINOR_TARGETS else MAJOR_TARGETS
+        val tonic = progression.tonic
+        val correct = targets.indexOf(progression.target)
+        require(correct >= 0) { "Unknown target ${progression.target.label} for mode minor=${progression.minor}" }
         val key = 48 + rnd.nextInt(12) // tonic somewhere in C3..B3
 
         val first = voice(tonic, key, rnd.nextInt(3), near = null)
-        val second = voice(options[correct], key, rnd.nextInt(3), near = first.first())
+        val second = voice(progression.target, key, rnd.nextInt(3), near = first.first())
         return Question(
             chords = listOf(first, second),
-            choices = options.map { "${tonic.label} → ${it.label}" },
+            choices = targets.map { "${tonic.label} → ${it.label}" },
             correct = correct,
+            progressionId = progression.id,
+            mode = GameMode.DEGREES,
+            prompt = "Akkordfolge · ${if (progression.minor) "Moll" else "Dur"}",
+        )
+    }
+
+    private fun buildChordType(exercise: ChordTypeExercise, rnd: Random): Question {
+        val correct = CHORD_TYPE_EXERCISES.indexOf(exercise)
+        val key = 48 + rnd.nextInt(12)
+        val intervals = exercise.type.intervals
+        // Keep root in the bass so sus2 and sus4 stay unambiguously distinct.
+        val notes = if (rnd.nextBoolean()) {
+            intervals.map { key + it }
+        } else if (intervals.size == 3) {
+            listOf(key, key + intervals[2], key + intervals[1] + 12)
+        } else {
+            listOf(key, key + intervals[2], key + intervals[3], key + intervals[1] + 12)
+        }
+        return Question(
+            chords = listOf(notes),
+            choices = CHORD_TYPES.map { it.label },
+            correct = correct,
+            progressionId = exercise.id,
+            mode = GameMode.CHORD_TYPES,
+            prompt = "Akkordtyp erkennen",
+        )
+    }
+
+    private fun buildCadence(cadence: Cadence, rnd: Random): Question {
+        val pool = if (cadence.minor) MINOR_CADENCES else MAJOR_CADENCES
+        val correct = pool.indexOf(cadence)
+        require(correct >= 0) { "Unknown cadence ${cadence.id}" }
+        val key = 48 + rnd.nextInt(12)
+
+        val first = voice(cadence.tonic, key, rnd.nextInt(3), near = null)
+        val second = voice(cadence.second, key, rnd.nextInt(3), near = first.first())
+        val third = voice(cadence.third, key, rnd.nextInt(3), near = (first.first() + second.first()) / 2)
+        return Question(
+            chords = listOf(first, second, third),
+            choices = pool.map { it.choiceLabel },
+            correct = correct,
+            progressionId = cadence.id,
+            mode = GameMode.CADENCES,
+            prompt = "Kadenz · ${if (cadence.minor) "Moll" else "Dur"}",
+        )
+    }
+
+    private fun buildInversion(exercise: InversionExercise, rnd: Random): Question {
+        val correct = INVERSION_EXERCISES.indexOf(exercise)
+        val bass = 48 + rnd.nextInt(12) // uniform bass so inversion cannot be guessed from pitch height
+        val base = exercise.intervals
+        val rotated = base.drop(exercise.inversion) + base.take(exercise.inversion).map { it + 12 }
+        val shift = bass - rotated.first()
+        val notes = rotated.map { it + shift }
+        return Question(
+            chords = listOf(notes),
+            choices = INVERSION_EXERCISES.map { it.choiceLabel },
+            correct = correct,
+            progressionId = exercise.id,
+            mode = GameMode.INVERSIONS,
+            prompt = "Dreiklang & Umkehrung",
         )
     }
 
@@ -76,25 +288,132 @@ object QuestionFactory {
     }
 }
 
-/** Renders a progression to 16-bit mono PCM with a small piano-like additive synth. */
+/**
+ * Schedules missed exercises to return after a short gap ([RETRY_GAP]), then once more
+ * after a longer confirmation gap ([CONFIRM_GAP]) before graduating out of the queue.
+ */
+class ReviewQueue(initial: List<Entry> = emptyList()) {
+    data class Entry(val id: String, val stage: Int, val due: Int)
+
+    private val entries = initial.toMutableList()
+    private var lastId: String? = null
+
+    val pendingCount: Int get() = entries.size
+
+    fun pendingCount(mode: GameMode): Int = entries.count { matches(it.id, mode) }
+
+    fun snapshot(): List<Entry> = entries.toList()
+
+    private fun matches(id: String, mode: GameMode): Boolean =
+        mode == GameMode.MIX || EXERCISE_BY_ID[id]?.mode == mode
+
+    /** Picks the next question without mutating the queue so abandoning before answering loses no review. */
+    fun nextQuestion(mode: GameMode = GameMode.DEGREES, rnd: Random = Random): Question {
+        val dueEntry = entries.firstOrNull { it.due <= 0 && it.id != lastId && matches(it.id, mode) }
+        if (dueEntry != null) {
+            EXERCISE_BY_ID[dueEntry.id]?.let { return QuestionFactory.forExercise(it, rnd) }
+        }
+        val queuedIds = entries.mapTo(HashSet()) { it.id }
+        val targetMode = if (mode == GameMode.MIX) GameMode.PLAYABLE[rnd.nextInt(GameMode.PLAYABLE.size)] else mode
+        val modePool = EXERCISES_BY_MODE.getValue(targetMode)
+        val fresh = modePool.filter { it.id != lastId && it.id !in queuedIds }
+        val pool = fresh.ifEmpty { modePool.filter { it.id != lastId } }.ifEmpty { modePool }
+        return QuestionFactory.forExercise(pool[rnd.nextInt(pool.size)], rnd)
+    }
+
+    /** Records an answer for [progressionId] within [mode], updating due counters and graduation state. */
+    fun record(progressionId: String, correct: Boolean, mode: GameMode = GameMode.MIX) {
+        lastId = progressionId
+        for (i in entries.indices) {
+            val e = entries[i]
+            if (e.id != progressionId && e.due > 0 && matches(e.id, mode)) {
+                entries[i] = e.copy(due = e.due - 1)
+            }
+        }
+        val idx = entries.indexOfFirst { it.id == progressionId }
+        if (!correct) {
+            if (idx >= 0) entries.removeAt(idx)
+            entries.add(Entry(progressionId, stage = 0, due = RETRY_GAP))
+        } else if (idx >= 0) {
+            val current = entries.removeAt(idx)
+            if (current.stage == 0) {
+                entries.add(Entry(progressionId, stage = 1, due = CONFIRM_GAP))
+            }
+        }
+    }
+
+    fun encode(): String = entries.joinToString(",") { "${it.id}|${it.stage}|${it.due}" }
+
+    companion object {
+        const val RETRY_GAP = 2
+        const val CONFIRM_GAP = 5
+
+        fun decode(raw: String): ReviewQueue {
+            if (raw.isBlank()) return ReviewQueue()
+            val seen = HashSet<String>()
+            val parsed = mutableListOf<Entry>()
+            for (token in raw.split(',')) {
+                if (token.isBlank()) continue
+                val parts = token.split('|')
+                if (parts.size != 3) continue
+                val id = parts[0]
+                if (id !in EXERCISE_BY_ID || id in seen) continue
+                val stage = parts[1].toIntOrNull()?.coerceIn(0, 1) ?: continue
+                val due = parts[2].toIntOrNull()?.coerceAtLeast(0) ?: continue
+                seen.add(id)
+                parsed.add(Entry(id, stage, due))
+            }
+            return ReviewQueue(parsed)
+        }
+    }
+}
+
+/** Renders chords to 16-bit mono PCM with a small piano-like additive synth. */
 object Synth {
     const val RATE = 44100
     private const val FIRST_SEC = 0.55
     private const val LAST_SEC = 1.1
+    private const val ARP_STEP_SEC = 0.08
 
     fun render(chords: List<List<Int>>): ShortArray {
-        val lengths = chords.indices.map { if (it == chords.lastIndex) LAST_SEC else FIRST_SEC }
-        val total = (lengths.sum() * RATE).toInt()
-        val mix = FloatArray(total)
+        val counts = chords.indices.map {
+            ((if (it == chords.lastIndex) LAST_SEC else FIRST_SEC) * RATE).toInt()
+        }
+        val mix = FloatArray(counts.sum())
         var offset = 0
         chords.forEachIndexed { i, notes ->
-            val n = (lengths[i] * RATE).toInt()
+            val n = counts[i]
             for (note in notes) addNote(mix, offset, n, note)
             offset += n
         }
-        val peak = mix.maxOf { abs(it) }.coerceAtLeast(1e-6f)
+        return normalize(mix)
+    }
+
+    /** Renders each chord rolled upward note by note so dense voicings are easier to dissect. */
+    fun renderArpeggiated(chords: List<List<Int>>): ShortArray {
+        val counts = chords.mapIndexed { i, notes ->
+            val tail = if (i == chords.lastIndex) 0.85 else 0.45
+            val duration = notes.size * ARP_STEP_SEC + tail
+            (duration * RATE).toInt()
+        }
+        val mix = FloatArray(counts.sum())
+        var offset = 0
+        chords.forEachIndexed { i, notes ->
+            val n = counts[i]
+            notes.forEachIndexed { j, note ->
+                val noteOffset = (j * ARP_STEP_SEC * RATE).toInt()
+                val length = (n - noteOffset).coerceAtLeast(1)
+                addNote(mix, offset + noteOffset, length, note)
+            }
+            offset += n
+        }
+        return normalize(mix)
+    }
+
+    private fun normalize(mix: FloatArray): ShortArray {
+        val peak = mix.maxOfOrNull { abs(it) }?.coerceAtLeast(1e-6f) ?: 1e-6f
         val gain = 0.85f * Short.MAX_VALUE / peak
-        return ShortArray(total) { (mix[it] * gain).toInt().toShort() }
+        return ShortArray(mix.size) { (mix[it] * gain).toInt().toShort() }
     }
 
     private fun addNote(mix: FloatArray, start: Int, length: Int, midi: Int) {
@@ -119,12 +438,13 @@ object Synth {
 /** Plays rendered PCM on the platform's audio output; a new call replaces the running one. */
 expect object ChordPlayer {
     fun play(chords: List<List<Int>>)
+    fun playArpeggiated(chords: List<List<Int>>)
     fun stop()
 }
 
 /** Persisted game state; each platform backs it with its own preferences store. */
 interface Scores {
-    /** Most correct answers in one 1:30 run. */
+    /** Most correct answers in one 1:30 run (legacy alias for [GameMode.DEGREES]). */
     var highScore: Int
 
     /** Correct answers in a row right now; carries over between runs and app starts until a miss. */
@@ -135,4 +455,13 @@ interface Scores {
 
     /** Wrong answers that end a run early; 0 turns the limit off. */
     var maxErrors: Int
+
+    /** Serialized mistake-review queue so missed exercises repeat across runs and app starts. */
+    var reviewQueue: String
+
+    /** Selected ear-training mode for timed runs. */
+    var gameMode: GameMode
+
+    fun highScore(mode: GameMode): Int
+    fun setHighScore(mode: GameMode, value: Int)
 }
