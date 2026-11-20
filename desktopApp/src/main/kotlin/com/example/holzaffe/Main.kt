@@ -26,6 +26,21 @@ private class DesktopScores : Scores {
     override var maxErrors: Int
         get() = prefs.getInt("maxErrors", 0)
         set(v) = prefs.putInt("maxErrors", v)
+    override var reviewQueue: String
+        get() = prefs.get("reviewQueue", "")
+        set(v) = prefs.put("reviewQueue", v)
+    override var gameMode: GameMode
+        get() = GameMode.fromKey(prefs.get("gameMode", null))
+        set(v) = prefs.put("gameMode", v.key)
+
+    override fun highScore(mode: GameMode): Int = prefs.getInt(highScoreKey(mode), 0)
+
+    override fun setHighScore(mode: GameMode, value: Int) {
+        prefs.putInt(highScoreKey(mode), value)
+    }
+
+    private fun highScoreKey(mode: GameMode): String =
+        if (mode == GameMode.DEGREES) "highScore" else "highScore:${mode.key}"
 }
 
 fun main() = application {

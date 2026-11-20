@@ -36,6 +36,7 @@ class GateActivity : ComponentActivity() {
         target = intent.getStringExtra(EXTRA_PACKAGE).orEmpty()
         val store = Store(this)
         val required = store.required
+        val mode = store.gateMode
 
         setContent {
             AppTheme {
@@ -55,6 +56,8 @@ class GateActivity : ComponentActivity() {
                         Spacer(Modifier.weight(1f))
                         QuizPanel(
                             active = solved < required,
+                            scores = store,
+                            mode = mode,
                             onAnswer = { ok ->
                                 if (ok && ++solved >= required) {
                                     store.unlock(target)

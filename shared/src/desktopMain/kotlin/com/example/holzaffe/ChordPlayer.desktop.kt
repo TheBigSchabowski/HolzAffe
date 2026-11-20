@@ -8,9 +8,13 @@ actual object ChordPlayer {
     private var clip: Clip? = null
 
     @Synchronized
-    actual fun play(chords: List<List<Int>>) {
+    actual fun play(chords: List<List<Int>>) = playPcm(Synth.render(chords))
+
+    @Synchronized
+    actual fun playArpeggiated(chords: List<List<Int>>) = playPcm(Synth.renderArpeggiated(chords))
+
+    private fun playPcm(pcm: ShortArray) {
         stop()
-        val pcm = Synth.render(chords)
         val bytes = ByteArray(pcm.size * 2)
         for (i in pcm.indices) { // little-endian 16 bit
             bytes[2 * i] = pcm[i].toByte()

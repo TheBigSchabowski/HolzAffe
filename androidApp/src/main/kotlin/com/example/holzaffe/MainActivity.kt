@@ -21,6 +21,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -76,12 +77,13 @@ private fun ColumnScope.GateSection(store: Store, onApps: () -> Unit) {
     var gateOn by remember { mutableStateOf(gateEnabled(context)) }
     var required by remember { mutableIntStateOf(store.required) }
     var minutes by remember { mutableIntStateOf(store.unlockMinutes) }
+    var gateMode by remember { mutableStateOf(store.gateMode) }
     LifecycleResumeEffect(Unit) {
         gateOn = gateEnabled(context)
         onPauseOrDispose {}
     }
 
-    Spacer(Modifier.weight(1f))
+    HorizontalDivider(Modifier.padding(vertical = 4.dp))
     Text("App-Sperre", fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
     if (gateOn) {
         Text("Aktiv · ${store.blocked.size} App(s) gesperrt", color = Good)
@@ -92,6 +94,8 @@ private fun ColumnScope.GateSection(store: Store, onApps: () -> Unit) {
         }
     }
     OutlinedButton(onClick = onApps, modifier = Modifier.fillMaxWidth()) { Text("Gesperrte Apps wählen") }
+    Text("Modus der App-Sperre", fontSize = 14.sp)
+    ModePicker(selected = gateMode, onSelect = { gateMode = it; store.gateMode = it })
     Stepper("Richtige zum Öffnen", required, 1..20) { required = it; store.required = it }
     Stepper("Minuten offen danach", minutes, 1..60) { minutes = it; store.unlockMinutes = it }
 }
