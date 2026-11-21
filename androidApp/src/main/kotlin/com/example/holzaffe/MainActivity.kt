@@ -86,6 +86,7 @@ private fun ColumnScope.GateSection(store: Store, onApps: () -> Unit) {
     var overlayOn by remember { mutableStateOf(Settings.canDrawOverlays(context)) }
     var gateOn by remember { mutableStateOf(gateEnabled(context)) }
     var required by remember { mutableIntStateOf(store.required) }
+    var gatePoolSize by remember { mutableIntStateOf(store.gatePoolSize) }
     var minutes by remember { mutableIntStateOf(store.unlockMinutes) }
     var gateMode by remember { mutableStateOf(store.gateMode) }
 
@@ -163,8 +164,9 @@ private fun ColumnScope.GateSection(store: Store, onApps: () -> Unit) {
     }
 
     OutlinedButton(onClick = onApps, modifier = Modifier.fillMaxWidth()) { Text("Gesperrte Apps wählen") }
-    Text("Modus der App-Sperre (max. ${GateSessionDeck.DEFAULT_POOL_SIZE} wechselnde Aufgaben)", fontSize = 13.sp)
+    Text("Modus der App-Sperre", fontSize = 14.sp)
     ModePicker(selected = gateMode, onSelect = { gateMode = it; store.gateMode = it })
+    Stepper("Wechselnde Aufgaben pro Sperre", gatePoolSize, 2..18) { gatePoolSize = it; store.gatePoolSize = it }
     Stepper("Richtige zum Öffnen", required, 1..20) { required = it; store.required = it }
     Stepper("Minuten offen danach", minutes, 1..60) { minutes = it; store.unlockMinutes = it }
 }

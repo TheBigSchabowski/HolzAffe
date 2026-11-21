@@ -26,7 +26,7 @@ ein paar Aufgaben richtig erkannt hast.
 ## App-Sperre (nur Android)
 
 Öffnest du eine gesperrte App, erscheint davor die Challenge im gewählten Sperr-Modus. Pro App-Start
-zieht HolzAffe maximal **7 unterschiedliche Aufgaben**, die sich in ständig wechselnder Reihenfolge
+zieht HolzAffe standardmäßig **7 unterschiedliche Aufgaben** (einstellbar von 2 bis 18), die sich in ständig wechselnder Reihenfolge
 wiederholen – so lassen sich die Akkorde nach Gehör und Erinnerung lösen, ohne dass man eine feste
 Reihenfolge auswendig lernen kann. Nach 5 richtigen Antworten (einstellbar) geht die App auf und
 bleibt 10 Minuten (einstellbar) frei. In der App-Auswahl hilft eine Suchleiste (z. B. `whats` für

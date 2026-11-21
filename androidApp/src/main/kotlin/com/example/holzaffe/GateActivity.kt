@@ -46,13 +46,14 @@ class GateActivity : ComponentActivity() {
         val store = Store(this)
         val required = store.required
         val mode = store.gateMode
+        val poolSize = store.gatePoolSize
 
         setContent {
             AppTheme {
                 Surface(Modifier.fillMaxSize()) {
                     var paused by remember(target, sessionId) { mutableStateOf(false) }
-                    val deck = remember(target, sessionId, mode) {
-                        GateSessionDeck(mode = mode, maxPoolSize = GateSessionDeck.DEFAULT_POOL_SIZE)
+                    val deck = remember(target, sessionId, mode, poolSize) {
+                        GateSessionDeck(mode = mode, maxPoolSize = poolSize)
                     }
                     val nextGateQuestion = remember(deck) { { deck.nextQuestion() } }
                     BackHandler { goHome() }

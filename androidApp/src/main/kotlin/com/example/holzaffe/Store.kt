@@ -54,6 +54,11 @@ class Store(context: Context) : Scores {
         get() = prefs.getInt("required", 5)
         set(v) = prefs.edit().putInt("required", v).apply()
 
+    /** Maximum distinct exercises drawn per app-start gate session (default 7). */
+    var gatePoolSize: Int
+        get() = prefs.getInt("gatePoolSize", GateSessionDeck.DEFAULT_POOL_SIZE).coerceIn(2, 18)
+        set(v) = prefs.edit().putInt("gatePoolSize", v.coerceIn(2, 18)).apply()
+
     /** How long an app stays open after a passed challenge. */
     var unlockMinutes: Int
         get() = prefs.getInt("unlockMinutes", 10)
