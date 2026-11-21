@@ -20,6 +20,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -41,6 +42,7 @@ class GateActivity : ComponentActivity() {
         setContent {
             AppTheme {
                 Surface(Modifier.fillMaxSize()) {
+                    var paused by remember(target) { mutableStateOf(false) }
                     BackHandler { goHome() }
                     Column(
                         Modifier.safeDrawingPadding().padding(24.dp).fillMaxSize(),
@@ -58,6 +60,9 @@ class GateActivity : ComponentActivity() {
                             active = solved < required,
                             scores = store,
                             mode = mode,
+                            paused = paused,
+                            onPausedChange = { paused = it },
+                            isTimed = false,
                             onAnswer = { ok ->
                                 if (ok && ++solved >= required) {
                                     store.unlock(target)

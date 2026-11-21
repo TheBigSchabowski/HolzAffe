@@ -6,7 +6,10 @@ ein paar Aufgaben richtig erkannt hast.
 
 ## Das Spiel
 
-- **1:30 Zeit** im Puzzle-Rush-Format, dazu ein separater **♪ Zerlegt**-Button zum gebrochenen Anhören (Arpeggio).
+- **1:30 Zeit** im Puzzle-Rush-Format, mit **♪ Zerlegt** (Arpeggio) und **⏸ Check** (Check-Modus).
+- **Check-Modus (`⏸ Check`)**: Hält die Zeit im Run an, zeigt sowohl die Stufe (z. B. `I → ♭VII`) als auch
+  die konkreten Akkordnamen in der gespielten Tonart (z. B. `G-Dur → F-Dur`) samt Einzeltönen und lässt
+  jeden Akkord einzeln zum Doppelchecken (z. B. auf der Gitarre) abspielen.
 - **Vier Trainings-Modi plus Mix** (jeweils 9 Antworten zur Auswahl, auch für die App-Sperre wählbar):
   - **Stufen** (`I → …` / `i → …`): Dur `ii iii IV iv V ♭VI vi ♭VII vii°`, Moll `ii° III iv IV v V VI VII vii°`.
   - **Akkordtypen**: `Dur`, `Moll`, `dim`, `aug`, `sus2`, `sus4`, `maj7`, `7`, `m7` (eng und weit gelegt).

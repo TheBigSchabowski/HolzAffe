@@ -9,21 +9,26 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -101,41 +106,87 @@ fun QuizPanel(
     modifier: Modifier = Modifier,
     scores: Scores? = null,
     mode: GameMode = GameMode.DEGREES,
+    paused: Boolean = false,
+    onPausedChange: (Boolean) -> Unit = {},
+    isTimed: Boolean = false,
 ) {
     val review = remember(scores) { ReviewQueue.decode(scores?.reviewQueue.orEmpty()) }
     var question by remember(mode) { mutableStateOf(review.nextQuestion(mode)) }
+    var lastQuestion by remember(mode) { mutableStateOf<Question?>(null) }
     var picked by remember(mode) { mutableStateOf<Int?>(null) }
+    var inspectPrevious by remember(paused) { mutableStateOf(false) }
 
+    DisposableEffect(Unit) {
+        onDispose { ChordPlayer.stop() }
+    }
     LaunchedEffect(question) {
         withContext(Dispatchers.Default) { ChordPlayer.play(question.chords) }
     }
-    LaunchedEffect(picked, active) {
+    LaunchedEffect(picked, active, paused) {
         val p = picked ?: return@LaunchedEffect
-        if (!active) return@LaunchedEffect
+        if (!active || paused) return@LaunchedEffect
         // A miss stays on screen a little longer so the right answer can sink in.
         delay(if (p == question.correct) 250 else 1100)
+        lastQuestion = question
         picked = null
         question = review.nextQuestion(mode)
     }
 
+    if (paused) {
+        val canInspectPrevious = picked == null && lastQuestion != null
+        val displayed = if (canInspectPrevious && inspectPrevious) lastQuestion!! else question
+        CheckCard(
+            question = displayed,
+            isTimed = isTimed,
+            canInspectPrevious = canInspectPrevious,
+            inspectPrevious = inspectPrevious,
+            onSelectPrevious = { inspectPrevious = it },
+            onResume = {
+                lastQuestion = question
+                picked = null
+                question = review.nextQuestion(mode)
+                onPausedChange(false)
+            },
+            modifier = modifier,
+        )
+        return
+    }
+
     Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        val statusText = if (picked != null) {
+            "${question.choices[question.correct]}  ·  ${question.chordSummary}"
+        } else {
+            question.prompt
+        }
+        val statusColor = if (picked == question.correct) Good else MaterialTheme.colorScheme.primary
         Text(
-            question.prompt,
+            statusText,
             fontSize = 14.sp,
-            color = MaterialTheme.colorScheme.primary,
+            fontWeight = if (picked != null) FontWeight.SemiBold else FontWeight.Normal,
+            color = statusColor,
+            maxLines = 1,
+            softWrap = false,
             modifier = Modifier.align(Alignment.CenterHorizontally),
         )
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             OutlinedButton(
                 onClick = { ChordPlayer.play(question.chords) },
                 enabled = active,
+                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 6.dp),
                 modifier = Modifier.weight(1f),
-            ) { Text("▶  Nochmal", maxLines = 1) }
+            ) { Text("▶ Nochmal", fontSize = 13.sp, maxLines = 1, softWrap = false) }
             OutlinedButton(
                 onClick = { ChordPlayer.playArpeggiated(question.chords) },
                 enabled = active,
+                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 6.dp),
                 modifier = Modifier.weight(1f),
-            ) { Text("♪  Zerlegt", maxLines = 1) }
+            ) { Text("♪ Zerlegt", fontSize = 13.sp, maxLines = 1, softWrap = false) }
+            OutlinedButton(
+                onClick = { onPausedChange(true) },
+                enabled = active,
+                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 6.dp),
+                modifier = Modifier.weight(1f),
+            ) { Text("⏸ Check", fontSize = 13.sp, maxLines = 1, softWrap = false) }
         }
 
         question.choices.indices.chunked(3).forEach { rowIndices ->
@@ -167,6 +218,112 @@ fun QuizPanel(
                         ChoiceLabel(label)
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CheckCard(
+    question: Question,
+    isTimed: Boolean,
+    canInspectPrevious: Boolean,
+    inspectPrevious: Boolean,
+    onSelectPrevious: (Boolean) -> Unit,
+    onResume: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+    ) {
+        Column(
+            Modifier.fillMaxWidth().padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text(
+                if (isTimed) "Check-Modus · Zeit pausiert" else "Check-Modus",
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.primary,
+            )
+            if (canInspectPrevious) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf(false to "Aktuelle", true to "Vorherige").forEach { (prev, label) ->
+                        val active = inspectPrevious == prev
+                        Button(
+                            onClick = { onSelectPrevious(prev) },
+                            shape = RoundedCornerShape(10.dp),
+                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.background,
+                                contentColor = if (active) MaterialTheme.colorScheme.onPrimary else Color.White,
+                            ),
+                            modifier = Modifier.weight(1f).height(34.dp),
+                        ) {
+                            Text(label, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                        }
+                    }
+                }
+            }
+            Text(
+                question.choices[question.correct],
+                fontSize = 20.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = Good,
+            )
+            Text(
+                question.chordSummary,
+                fontSize = if (question.chordSummary.length > 20) 20.sp else 24.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color.White,
+                maxLines = 1,
+                softWrap = false,
+            )
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                question.chordInfos.forEachIndexed { idx, info ->
+                    OutlinedButton(
+                        onClick = { ChordPlayer.play(listOf(question.chords[idx])) },
+                        shape = RoundedCornerShape(12.dp),
+                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 6.dp),
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(
+                                "▶ ${info.name}",
+                                fontSize = if (info.name.length > 7) 12.sp else 14.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                softWrap = false,
+                            )
+                            Text(
+                                "${info.degree} · ${info.notes}",
+                                fontSize = 11.sp,
+                                color = Color.White.copy(alpha = 0.75f),
+                                maxLines = 1,
+                                softWrap = false,
+                            )
+                        }
+                    }
+                }
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = { ChordPlayer.play(question.chords) },
+                    modifier = Modifier.weight(1f),
+                ) { Text("▶ Alle", maxLines = 1) }
+                OutlinedButton(
+                    onClick = { ChordPlayer.playArpeggiated(question.chords) },
+                    modifier = Modifier.weight(1f),
+                ) { Text("♪ Zerlegt", maxLines = 1) }
+            }
+            Button(
+                onClick = onResume,
+                modifier = Modifier.fillMaxWidth().height(52.dp),
+            ) {
+                Text("▶  Weiter", fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
             }
         }
     }
@@ -272,7 +429,9 @@ fun Stepper(label: String, value: Int, range: IntRange, onChange: (Int) -> Unit)
 private fun Run(scores: Scores, onExit: () -> Unit) {
     var round by remember { mutableIntStateOf(0) } // bumping it restarts the run
     val mode = remember(round) { scores.gameMode }
-    var left by remember(round) { mutableIntStateOf(RUN_SECONDS) }
+    var paused by remember(round) { mutableStateOf(false) }
+    var remainingMs by remember(round) { mutableLongStateOf(RUN_SECONDS * 1000L) }
+    val left = ((remainingMs + 999L) / 1000L).toInt().coerceAtLeast(0)
     var score by remember(round) { mutableIntStateOf(0) }
     // The streak carries over from earlier runs; only a miss resets it.
     var streak by remember(round) { mutableIntStateOf(scores.streak) }
@@ -282,28 +441,47 @@ private fun Run(scores: Scores, onExit: () -> Unit) {
     val previousStreak = remember(round) { scores.bestStreak }
     val maxErrors = remember(round) { scores.maxErrors } // 0 = errors never end the run
     val failed = maxErrors > 0 && errors >= maxErrors
-    val over = left <= 0 || failed
+    val over = remainingMs <= 0L || failed
 
-    LaunchedEffect(round) {
-        val start = TimeSource.Monotonic.markNow()
-        while (left > 0 && !(maxErrors > 0 && errors >= maxErrors)) {
-            delay(200)
-            left = (RUN_SECONDS - start.elapsedNow().inWholeSeconds).toInt().coerceAtLeast(0)
+    LaunchedEffect(round, paused) {
+        if (paused) return@LaunchedEffect
+        var lastMark = TimeSource.Monotonic.markNow()
+        while (remainingMs > 0L && !(maxErrors > 0 && errors >= maxErrors)) {
+            delay(100)
+            val now = TimeSource.Monotonic.markNow()
+            remainingMs = (remainingMs - (now - lastMark).inWholeMilliseconds).coerceAtLeast(0L)
+            lastMark = now
         }
     }
     LaunchedEffect(over) {
-        if (over) ChordPlayer.stop()
+        if (over) {
+            paused = false
+            ChordPlayer.stop()
+        }
     }
 
     Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                "${left / 60}:${(left % 60).toString().padStart(2, '0')}",
-                fontSize = 40.sp,
-                fontWeight = FontWeight.Bold,
-                color = if (left <= 10) Bad else MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.weight(1f),
-            )
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "${left / 60}:${(left % 60).toString().padStart(2, '0')}",
+                    fontSize = 40.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = when {
+                        paused -> MaterialTheme.colorScheme.primary
+                        left <= 10 -> Bad
+                        else -> MaterialTheme.colorScheme.onSurface
+                    },
+                )
+                if (paused) {
+                    Text(
+                        "PAUSIERT",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+            }
             Column(horizontalAlignment = Alignment.End) {
                 Text("Serie $streak", fontSize = 26.sp, color = if (streak >= 5) Good else MaterialTheme.colorScheme.onSurface)
                 if (maxErrors > 0) Text("Fehler $errors / $maxErrors", color = Bad)
@@ -336,21 +514,29 @@ private fun Run(scores: Scores, onExit: () -> Unit) {
         } else {
             // Keyed by round so a restart begins with a fresh exercise.
             key(round) {
-                QuizPanel(active = true, scores = scores, mode = mode, onAnswer = { ok ->
-                    if (ok) {
-                        score++
-                        streak++
-                        if (streak > bestStreak) bestStreak = streak
-                        // Saved per answer so leaving mid-run keeps a record.
-                        if (score > scores.highScore(mode)) scores.setHighScore(mode, score)
-                        scores.streak = streak
-                        if (streak > scores.bestStreak) scores.bestStreak = streak
-                    } else {
-                        streak = 0
-                        scores.streak = 0
-                        errors++
-                    }
-                })
+                QuizPanel(
+                    active = true,
+                    scores = scores,
+                    mode = mode,
+                    paused = paused,
+                    onPausedChange = { paused = it },
+                    isTimed = true,
+                    onAnswer = { ok ->
+                        if (ok) {
+                            score++
+                            streak++
+                            if (streak > bestStreak) bestStreak = streak
+                            // Saved per answer so leaving mid-run keeps a record.
+                            if (score > scores.highScore(mode)) scores.setHighScore(mode, score)
+                            scores.streak = streak
+                            if (streak > scores.bestStreak) scores.bestStreak = streak
+                        } else {
+                            streak = 0
+                            scores.streak = 0
+                            errors++
+                        }
+                    },
+                )
             }
             TextButton(onClick = onExit) { Text("Abbrechen") }
         }

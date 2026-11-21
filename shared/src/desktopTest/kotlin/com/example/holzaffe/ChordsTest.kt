@@ -33,11 +33,16 @@ class ChordsTest {
                     GameMode.MIX -> error("concrete question cannot have MIX mode")
                 }
                 assertEquals(expectedChords, q.chords.size, "unexpected chord count for ${q.mode}")
+                assertEquals(q.chords.size, q.chordInfos.size, "chordInfos must match chords in ${q.mode}")
+                assertTrue(q.chordSummary.isNotBlank())
 
-                for (chord in q.chords) {
+                for ((chord, info) in q.chords.zip(q.chordInfos)) {
                     assertEquals(chord.sorted(), chord, "ascending voicing: $chord")
                     assertEquals(chord.distinct().size, chord.size, "distinct pitches: $chord")
                     assertTrue(chord.all { it in 36..84 }, "playable range in ${q.mode}: $chord")
+                    assertTrue(info.name.isNotBlank())
+                    assertTrue(info.degree.isNotBlank())
+                    assertEquals(chord.size, info.notes.split("–").size, "notes label should match chord size")
                 }
 
                 when (q.mode) {
@@ -101,6 +106,67 @@ class ChordsTest {
         assertEquals(9, MINOR_CADENCES.map { it.second.label to it.third.label }.toSet().size)
         assertTrue(MAJOR_CADENCES.all { it.second != it.third })
         assertTrue(MINOR_CADENCES.all { it.second != it.third })
+    }
+
+    @Test
+    fun chordInfosMatchConcreteGuitarChordNames() {
+        val gI = degreeChordInfo(Degree("I", 0, listOf(0, 4, 7)), key = 55, minor = false, midiNotes = listOf(55, 59, 62))
+        assertEquals(ChordInfo("G-Dur", "I", "G–H–D"), gI)
+
+        val gFlatVII = degreeChordInfo(MAJOR_TARGETS.first { it.label == "♭VII" }, key = 55, minor = false, midiNotes = listOf(53, 57, 60))
+        assertEquals(ChordInfo("F-Dur", "♭VII", "F–A–C"), gFlatVII)
+
+        val gFlatVI = degreeChordInfo(MAJOR_TARGETS.first { it.label == "♭VI" }, key = 55, minor = false, midiNotes = listOf(51, 55, 58))
+        assertEquals(ChordInfo("E♭-Dur", "♭VI", "E♭–G–B♭"), gFlatVI)
+
+        val gViiDim = degreeChordInfo(MAJOR_TARGETS.first { it.label == "vii°" }, key = 55, minor = false, midiNotes = listOf(54, 57, 60))
+        assertEquals(ChordInfo("F♯-dim", "vii°", "F♯–A–C"), gViiDim)
+
+        val eVi = degreeChordInfo(MAJOR_TARGETS.first { it.label == "vi" }, key = 52, minor = false, midiNotes = listOf(49, 52, 56))
+        assertEquals(ChordInfo("C♯-Moll", "vi", "C♯–E–G♯"), eVi)
+
+        val dMinor = degreeChordInfo(Degree("i", 0, listOf(0, 3, 7)), key = 50, minor = true, midiNotes = listOf(50, 53, 57))
+        assertEquals(ChordInfo("D-Moll", "i", "D–F–A"), dMinor)
+
+        val dMinorVI = degreeChordInfo(MINOR_TARGETS.first { it.label == "VI" }, key = 50, minor = true, midiNotes = listOf(58, 62, 65))
+        assertEquals(ChordInfo("B♭-Dur", "VI", "B♭–D–F"), dMinorVI)
+
+        val dMinorVii = degreeChordInfo(MINOR_TARGETS.first { it.label == "vii°" }, key = 50, minor = true, midiNotes = listOf(49, 52, 55))
+        assertEquals(ChordInfo("C♯-dim", "vii°", "C♯–E–G"), dMinorVii)
+
+        assertEquals(
+            ChordInfo("Cmaj7", "maj7", "C–E–G–H"),
+            chordTypeInfo(CHORD_TYPES.first { it.id == "maj7" }, key = 48, midiNotes = listOf(48, 52, 55, 59)),
+        )
+        assertEquals(
+            ChordInfo("G7", "7", "G–H–D–F"),
+            chordTypeInfo(CHORD_TYPES.first { it.id == "7" }, key = 55, midiNotes = listOf(55, 59, 62, 65)),
+        )
+        assertEquals(
+            ChordInfo("Am7", "m7", "A–C–E–G"),
+            chordTypeInfo(CHORD_TYPES.first { it.id == "m7" }, key = 57, midiNotes = listOf(57, 60, 64, 67)),
+        )
+        assertEquals(
+            ChordInfo("Dsus4", "sus4", "D–G–A"),
+            chordTypeInfo(CHORD_TYPES.first { it.id == "sus4" }, key = 50, midiNotes = listOf(50, 55, 57)),
+        )
+        assertEquals(
+            ChordInfo("C-aug", "aug", "C–E–G♯"),
+            chordTypeInfo(CHORD_TYPES.first { it.id == "aug" }, key = 48, midiNotes = listOf(48, 52, 56)),
+        )
+
+        assertEquals(
+            ChordInfo("C-Dur", "Dur · Grund", "C–E–G"),
+            inversionChordInfo(INVERSION_EXERCISES.first { it.quality == "Dur" && it.inversion == 0 }, bass = 48, midiNotes = listOf(48, 52, 55)),
+        )
+        assertEquals(
+            ChordInfo("C-Dur/E", "Dur · 1. Umk", "E–G–C"),
+            inversionChordInfo(INVERSION_EXERCISES.first { it.quality == "Dur" && it.inversion == 1 }, bass = 52, midiNotes = listOf(52, 55, 60)),
+        )
+        assertEquals(
+            ChordInfo("C-Dur/G", "Dur · 2. Umk", "G–C–E"),
+            inversionChordInfo(INVERSION_EXERCISES.first { it.quality == "Dur" && it.inversion == 2 }, bass = 55, midiNotes = listOf(55, 60, 64)),
+        )
     }
 
     @Test

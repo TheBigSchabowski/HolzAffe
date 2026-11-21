@@ -163,9 +163,106 @@ val ALL_EXERCISES: List<Exercise> = GameMode.PLAYABLE.flatMap { EXERCISES_BY_MOD
 
 private val EXERCISE_BY_ID: Map<String, Exercise> = ALL_EXERCISES.associateBy { it.id }
 
+/** Human-readable chord metadata for Check mode (guitar double-check). */
+data class ChordInfo(
+    val name: String,
+    val degree: String,
+    val notes: String,
+)
+
+private val SHARP_NOTES = listOf("C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "H")
+private val FLAT_NOTES = listOf("C", "D♭", "D", "E♭", "E", "F", "G♭", "G", "A♭", "A", "B♭", "H")
+private val GUITAR_NOTES = listOf("C", "C♯", "D", "E♭", "E", "F", "F♯", "G", "A♭", "A", "B♭", "H")
+
+private fun noteNames(useSharps: Boolean): List<String> = if (useSharps) SHARP_NOTES else FLAT_NOTES
+
+internal fun useSharpsForKey(keyPc: Int, minor: Boolean, degreeLabel: String): Boolean {
+    if (degreeLabel.startsWith("♭")) return false
+    if (degreeLabel == "vii°") return true
+    return (!minor && keyPc in setOf(7, 2, 9, 4, 11, 6)) || (minor && keyPc in setOf(9, 4, 11, 6, 1, 8))
+}
+
+internal fun formatNotes(midiNotes: List<Int>, useSharps: Boolean): String {
+    val names = noteNames(useSharps)
+    return midiNotes.joinToString("–") { names[it.mod(12)] }
+}
+
+internal fun degreeChordInfo(degree: Degree, key: Int, minor: Boolean, midiNotes: List<Int>): ChordInfo {
+    val keyPc = key.mod(12)
+    val rootPc = (key + degree.root).mod(12)
+    val useSharps = useSharpsForKey(keyPc, minor, degree.label)
+    val rootName = noteNames(useSharps)[rootPc]
+    val chordName = when (degree.intervals) {
+        MAJ -> "$rootName-Dur"
+        MIN -> "$rootName-Moll"
+        DIM -> "$rootName-dim"
+        else -> "$rootName-aug"
+    }
+    val noteSharps = if ('♭' in rootName) {
+        false
+    } else {
+        when (degree.intervals) {
+            MIN -> rootPc in setOf(4, 11, 6, 1, 8)
+            DIM -> rootPc in setOf(6, 1, 8, 3)
+            else -> rootPc in setOf(7, 2, 9, 4, 11, 6, 1)
+        }
+    }
+    return ChordInfo(
+        name = chordName,
+        degree = degree.label,
+        notes = formatNotes(midiNotes, noteSharps),
+    )
+}
+
+internal fun chordTypeInfo(type: ChordType, key: Int, midiNotes: List<Int>): ChordInfo {
+    val rootPc = key.mod(12)
+    val rootName = GUITAR_NOTES[rootPc]
+    val name = when (type.id) {
+        "Dur" -> "$rootName-Dur"
+        "Moll" -> "$rootName-Moll"
+        "dim" -> "$rootName-dim"
+        "aug" -> "$rootName-aug"
+        else -> "$rootName${type.label}"
+    }
+    val noteSharps = when (type.id) {
+        "Moll", "m7" -> rootPc in setOf(4, 11, 6, 1)
+        "dim" -> rootPc in setOf(6, 1)
+        "aug" -> rootPc !in setOf(3, 8, 10)
+        else -> rootPc in setOf(7, 2, 9, 4, 11, 6, 1)
+    }
+    return ChordInfo(
+        name = name,
+        degree = type.label,
+        notes = formatNotes(midiNotes, noteSharps),
+    )
+}
+
+internal fun inversionChordInfo(exercise: InversionExercise, bass: Int, midiNotes: List<Int>): ChordInfo {
+    val rootPc = (bass - exercise.intervals[exercise.inversion]).mod(12)
+    val bassPc = bass.mod(12)
+    val rootName = GUITAR_NOTES[rootPc]
+    val baseName = when (exercise.quality) {
+        "Dur" -> "$rootName-Dur"
+        "Moll" -> "$rootName-Moll"
+        else -> "$rootName-dim"
+    }
+    val useSharps = when (exercise.quality) {
+        "Dur" -> rootPc in setOf(7, 2, 9, 4, 11, 6, 1)
+        "Moll" -> rootPc in setOf(4, 11, 6, 1)
+        else -> rootPc in setOf(6, 1)
+    }
+    val bassName = noteNames(useSharps)[bassPc]
+    val fullName = if (exercise.inversion == 0) baseName else "$baseName/$bassName"
+    return ChordInfo(
+        name = fullName,
+        degree = exercise.choiceLabel,
+        notes = formatNotes(midiNotes, useSharps),
+    )
+}
+
 /**
  * One question: MIDI chord voicings, 9 answer labels, the correct index,
- * the underlying [Exercise.id], its [GameMode], and a short UI prompt.
+ * the underlying [Exercise.id], its [GameMode], a short UI prompt, and concrete chord names.
  * Intentionally a plain class so assigning a fresh question always retriggers playback.
  */
 class Question(
@@ -175,7 +272,10 @@ class Question(
     val progressionId: String,
     val mode: GameMode,
     val prompt: String,
-)
+    val chordInfos: List<ChordInfo>,
+) {
+    val chordSummary: String get() = chordInfos.joinToString(" → ") { it.name }
+}
 
 object QuestionFactory {
     const val CHOICE_COUNT = 9
@@ -214,6 +314,10 @@ object QuestionFactory {
             progressionId = progression.id,
             mode = GameMode.DEGREES,
             prompt = "Akkordfolge · ${if (progression.minor) "Moll" else "Dur"}",
+            chordInfos = listOf(
+                degreeChordInfo(tonic, key, progression.minor, first),
+                degreeChordInfo(progression.target, key, progression.minor, second),
+            ),
         )
     }
 
@@ -236,6 +340,7 @@ object QuestionFactory {
             progressionId = exercise.id,
             mode = GameMode.CHORD_TYPES,
             prompt = "Akkordtyp erkennen",
+            chordInfos = listOf(chordTypeInfo(exercise.type, key, notes)),
         )
     }
 
@@ -255,6 +360,11 @@ object QuestionFactory {
             progressionId = cadence.id,
             mode = GameMode.CADENCES,
             prompt = "Kadenz · ${if (cadence.minor) "Moll" else "Dur"}",
+            chordInfos = listOf(
+                degreeChordInfo(cadence.tonic, key, cadence.minor, first),
+                degreeChordInfo(cadence.second, key, cadence.minor, second),
+                degreeChordInfo(cadence.third, key, cadence.minor, third),
+            ),
         )
     }
 
@@ -272,6 +382,7 @@ object QuestionFactory {
             progressionId = exercise.id,
             mode = GameMode.INVERSIONS,
             prompt = "Dreiklang & Umkehrung",
+            chordInfos = listOf(inversionChordInfo(exercise, bass, notes)),
         )
     }
 
