@@ -1,5 +1,7 @@
 package com.example.holzaffe
 
+import android.appwidget.AppWidgetHost
+import android.appwidget.AppWidgetManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -9,6 +11,7 @@ import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -51,25 +54,97 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 
-private enum class MainScreen { HOME, APPS, TASKS }
+private enum class MainScreen { HOME, APPS, TASKS, PICK_REDIRECT_APP }
 
 class MainActivity : ComponentActivity() {
+    private lateinit var store: Store
+    private lateinit var widgetHost: AppWidgetHost
+
+    // Pending widget metadata while Android's system widget picker / configurator runs.
+    private var pendingWidgetId: Int = AppWidgetManager.INVALID_APPWIDGET_ID
+    private var pendingWidgetMinutes: Int = 1
+    private var pendingWidgetCustomLabel: String = ""
+    // Bumped whenever a widget task is added from an ActivityResult so Compose reloads Store.
+    private var tasksRevision by mutableIntStateOf(0)
+
+    private val pickWidgetLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val id = result.data?.getIntExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, pendingWidgetId) ?: pendingWidgetId
+        if (result.resultCode != RESULT_OK || id == AppWidgetManager.INVALID_APPWIDGET_ID) {
+            if (id != AppWidgetManager.INVALID_APPWIDGET_ID) widgetHost.deleteAppWidgetId(id)
+            pendingWidgetId = AppWidgetManager.INVALID_APPWIDGET_ID
+            return@registerForActivityResult
+        }
+        val info = AppWidgetManager.getInstance(this).getAppWidgetInfo(id)
+        if (info == null) {
+            widgetHost.deleteAppWidgetId(id)
+            pendingWidgetId = AppWidgetManager.INVALID_APPWIDGET_ID
+            return@registerForActivityResult
+        }
+        if (info.configure != null) {
+            // Launch the widget's own configuration screen (e.g. choosing a specific Widder section).
+            pendingWidgetId = id
+            runCatching {
+                widgetHost.startAppWidgetConfigureActivityForResult(this, id, 0, REQ_CONFIGURE_WIDGET, null)
+            }.onFailure {
+                saveBoundWidgetTask(id)
+            }
+        } else {
+            saveBoundWidgetTask(id)
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val store = Store(this)
+        store = Store(this)
+        widgetHost = AppWidgetHost(applicationContext, GateActivity.WIDGET_HOST_ID)
         setContent {
             AppTheme {
                 Surface(Modifier.fillMaxSize()) {
                     var screen by remember { mutableStateOf(MainScreen.HOME) }
+                    var redirectMinutes by remember { mutableIntStateOf(1) }
                     val control = remember { RunControl() }
                     BackHandler(enabled = screen != MainScreen.HOME || control.running) {
-                        screen = MainScreen.HOME
+                        screen = if (screen == MainScreen.PICK_REDIRECT_APP) MainScreen.TASKS else MainScreen.HOME
                         control.running = false
                     }
                     Column(Modifier.safeDrawingPadding().padding(24.dp).fillMaxSize()) {
                         when (screen) {
                             MainScreen.APPS -> Apps(store, onExit = { screen = MainScreen.HOME })
-                            MainScreen.TASKS -> GateTasksScreen(store, onExit = { screen = MainScreen.HOME })
+                            MainScreen.PICK_REDIRECT_APP -> RedirectAppPicker(
+                                minutes = redirectMinutes,
+                                onPick = { entry ->
+                                    val created = GateTask(
+                                        id = "a_${System.currentTimeMillis()}_${store.gateTasks.size}",
+                                        text = entry.label,
+                                        minutes = redirectMinutes,
+                                        kind = GateTaskKind.APP,
+                                        targetPackage = entry.pkg,
+                                    )
+                                    store.gateTasks = store.gateTasks + created
+                                    tasksRevision++
+                                    screen = MainScreen.TASKS
+                                },
+                                onCancel = { screen = MainScreen.TASKS },
+                            )
+                            MainScreen.TASKS -> GateTasksScreen(
+                                store = store,
+                                revision = tasksRevision,
+                                onPickApp = { mins ->
+                                    redirectMinutes = mins
+                                    screen = MainScreen.PICK_REDIRECT_APP
+                                },
+                                onPickWidget = { mins, customLabel ->
+                                    launchWidgetPicker(mins, customLabel)
+                                },
+                                onDeleteWidget = { widgetId ->
+                                    if (widgetId != AppWidgetManager.INVALID_APPWIDGET_ID) {
+                                        runCatching { widgetHost.deleteAppWidgetId(widgetId) }
+                                    }
+                                },
+                                onExit = { screen = MainScreen.HOME },
+                            )
                             MainScreen.HOME -> GameApp(store, control) {
                                 GateSection(
                                     store = store,
@@ -84,9 +159,64 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    @Deprecated("Required for AppWidgetHost.startAppWidgetConfigureActivityForResult")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQ_CONFIGURE_WIDGET) {
+            val id = data?.getIntExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, pendingWidgetId) ?: pendingWidgetId
+            if (resultCode == RESULT_OK && id != AppWidgetManager.INVALID_APPWIDGET_ID) {
+                saveBoundWidgetTask(id)
+            } else if (id != AppWidgetManager.INVALID_APPWIDGET_ID) {
+                widgetHost.deleteAppWidgetId(id)
+                pendingWidgetId = AppWidgetManager.INVALID_APPWIDGET_ID
+            }
+        }
+    }
+
+    private fun launchWidgetPicker(minutes: Int, customLabel: String) {
+        val id = widgetHost.allocateAppWidgetId()
+        pendingWidgetId = id
+        pendingWidgetMinutes = minutes
+        pendingWidgetCustomLabel = customLabel.trim()
+        val intent = Intent(AppWidgetManager.ACTION_APPWIDGET_PICK)
+            .putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, id)
+        pickWidgetLauncher.launch(intent)
+    }
+
+    private fun saveBoundWidgetTask(widgetId: Int) {
+        val info = AppWidgetManager.getInstance(this).getAppWidgetInfo(widgetId)
+        val pkg = info?.provider?.packageName.orEmpty()
+        val providerLabel = info?.loadLabel(packageManager)?.toString().orEmpty()
+        val appName = runCatching {
+            packageManager.getApplicationLabel(packageManager.getApplicationInfo(pkg, 0)).toString()
+        }.getOrDefault(pkg)
+        val label = pendingWidgetCustomLabel.ifBlank {
+            if (providerLabel.isNotBlank() && !providerLabel.equals(appName, ignoreCase = true)) {
+                "$appName · $providerLabel"
+            } else {
+                providerLabel.ifBlank { appName.ifBlank { "Widget" } }
+            }
+        }
+        val created = GateTask(
+            id = "w_${System.currentTimeMillis()}_$widgetId",
+            text = label,
+            minutes = pendingWidgetMinutes,
+            kind = GateTaskKind.WIDGET,
+            targetPackage = pkg,
+            widgetId = widgetId,
+        )
+        store.gateTasks = store.gateTasks + created
+        pendingWidgetId = AppWidgetManager.INVALID_APPWIDGET_ID
+        tasksRevision++
+    }
+
     override fun onStop() {
         super.onStop()
         ChordPlayer.stop()
+    }
+
+    companion object {
+        private const val REQ_CONFIGURE_WIDGET = 9001
     }
 }
 
@@ -363,21 +493,34 @@ private fun ColumnScope.Apps(store: Store, onExit: () -> Unit) {
 }
 
 /**
- * Submenu to create timed text tasks (1..3 min) and move them into or out of the active
- * app-gate rotation field. By default only the ear-training quiz is active; adding custom
- * tasks makes the gate alternate between all active entries on each app opening.
+ * Submenu to create timed text tasks, app redirects, or configured widgets (1..3 min) and
+ * move them into or out of the active app-gate rotation field. By default only the ear-training
+ * quiz is active; adding custom entries makes the gate alternate between all active entries.
  */
 @Composable
-private fun ColumnScope.GateTasksScreen(store: Store, onExit: () -> Unit) {
-    var tasks by remember { mutableStateOf(store.gateTasks) }
-    var activeIds by remember { mutableStateOf(store.gateActiveTaskIds) }
-    var includeQuiz by remember { mutableStateOf(store.gateIncludeQuiz) }
+private fun ColumnScope.GateTasksScreen(
+    store: Store,
+    revision: Int,
+    onPickApp: (minutes: Int) -> Unit,
+    onPickWidget: (minutes: Int, customLabel: String) -> Unit,
+    onDeleteWidget: (widgetId: Int) -> Unit,
+    onExit: () -> Unit,
+) {
+    var tasks by remember(revision) { mutableStateOf(store.gateTasks) }
+    var activeIds by remember(revision) { mutableStateOf(store.gateActiveTaskIds) }
+    var includeQuiz by remember(revision) { mutableStateOf(store.gateIncludeQuiz) }
     var newText by remember { mutableStateOf("") }
     var newMinutes by remember { mutableIntStateOf(1) }
 
     val activeTasks = tasks.filter { it.id in activeIds }
     val inactiveTasks = tasks.filter { it.id !in activeIds }
     val totalActiveCount = (if (includeQuiz) 1 else 0) + activeTasks.size
+
+    fun taskKindBadge(task: GateTask): String = when (task.kind) {
+        GateTaskKind.TEXT -> "📝 ${task.minutes} Min. · Text-Aufgabe"
+        GateTaskKind.APP -> "📱 ${task.minutes} Min. · App-Weiterleitung"
+        GateTaskKind.WIDGET -> "🧩 ${task.minutes} Min. · Widget"
+    }
 
     fun persist(nextTasks: List<GateTask> = tasks, nextActive: Set<String> = activeIds, nextQuiz: Boolean = includeQuiz) {
         val validIds = nextTasks.map { it.id }.toSet()
@@ -394,7 +537,7 @@ private fun ColumnScope.GateTasksScreen(store: Store, onExit: () -> Unit) {
 
     Text("Sperr-Aufgaben", fontSize = 26.sp, fontWeight = FontWeight.Bold)
     Text(
-        "Ziehe eigene Aufgaben (1–3 Min.) ins aktive Feld – die App-Sperre wechselt dann bei jedem Öffnen dazwischen.",
+        "Erstelle Text-Aufgaben, App-Weiterleitungen oder Widgets (1–3 Min.) und ziehe sie ins aktive Feld.",
         fontSize = 13.sp,
         color = Color.White.copy(alpha = 0.75f),
         modifier = Modifier.padding(top = 4.dp, bottom = 10.dp),
@@ -433,7 +576,7 @@ private fun ColumnScope.GateTasksScreen(store: Store, onExit: () -> Unit) {
                         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
                                 Text(task.text, fontSize = 14.sp, fontWeight = FontWeight.Medium)
-                                Text("${task.minutes} Min. · vibriert beim Öffnen", fontSize = 12.sp, color = Good)
+                                Text(taskKindBadge(task), fontSize = 12.sp, color = Good)
                             }
                             TextButton(onClick = { persist(nextActive = activeIds - task.id) }) { Text("Raus") }
                         }
@@ -442,7 +585,7 @@ private fun ColumnScope.GateTasksScreen(store: Store, onExit: () -> Unit) {
             }
         }
 
-        // Create a new 1..3 min task.
+        // Create a new 1..3 min task (Text, App redirect, or configured Widget).
         item {
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -453,14 +596,7 @@ private fun ColumnScope.GateTasksScreen(store: Store, onExit: () -> Unit) {
                     Modifier.fillMaxWidth().padding(14.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Text("Neue Aufgabe erstellen", fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-                    OutlinedTextField(
-                        value = newText,
-                        onValueChange = { newText = it },
-                        placeholder = { Text("z. B. Akkorde übers Griffbrett") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
+                    Text("Neu hinzufügen (1–3 Min.)", fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         (GateTask.MIN_MINUTES..GateTask.MAX_MINUTES).forEach { min ->
                             val selected = min == newMinutes
@@ -478,6 +614,31 @@ private fun ColumnScope.GateTasksScreen(store: Store, onExit: () -> Unit) {
                             }
                         }
                     }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        OutlinedButton(
+                            onClick = { onPickApp(newMinutes) },
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Text("📱 + App", fontSize = 13.sp, maxLines = 1)
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                val label = newText.trim()
+                                newText = ""
+                                onPickWidget(newMinutes, label)
+                            },
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Text("🧩 + Widget", fontSize = 13.sp, maxLines = 1)
+                        }
+                    }
+                    OutlinedTextField(
+                        value = newText,
+                        onValueChange = { newText = it },
+                        placeholder = { Text("Text-Aufgabe (oder optional Widget-Name)…") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
                     Button(
                         onClick = {
                             val trimmed = newText.trim()
@@ -494,7 +655,7 @@ private fun ColumnScope.GateTasksScreen(store: Store, onExit: () -> Unit) {
                         enabled = newText.isNotBlank(),
                         modifier = Modifier.fillMaxWidth(),
                     ) {
-                        Text("+ Aufgabe speichern")
+                        Text("📝 + Text-Aufgabe speichern")
                     }
                 }
             }
@@ -526,10 +687,15 @@ private fun ColumnScope.GateTasksScreen(store: Store, onExit: () -> Unit) {
                 ) {
                     Column(Modifier.weight(1f)) {
                         Text(task.text, fontSize = 14.sp)
-                        Text("${task.minutes} Min.", fontSize = 12.sp, color = Color.White.copy(alpha = 0.7f))
+                        Text(taskKindBadge(task), fontSize = 12.sp, color = Color.White.copy(alpha = 0.7f))
                     }
                     Button(onClick = { persist(nextActive = activeIds + task.id) }) { Text("+ Aktiv", fontSize = 13.sp) }
-                    TextButton(onClick = { persist(nextTasks = tasks.filterNot { it.id == task.id }) }) {
+                    TextButton(
+                        onClick = {
+                            if (task.kind == GateTaskKind.WIDGET) onDeleteWidget(task.widgetId)
+                            persist(nextTasks = tasks.filterNot { it.id == task.id })
+                        }
+                    ) {
                         Text("×", color = Bad, fontSize = 18.sp)
                     }
                 }
@@ -537,6 +703,72 @@ private fun ColumnScope.GateTasksScreen(store: Store, onExit: () -> Unit) {
         }
     }
     Button(onClick = onExit, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text("Fertig") }
+}
+
+/** Searchable app picker to create a 1..3 min practice-app redirect (e.g. Widder, Anki, Duolingo). */
+@Composable
+private fun ColumnScope.RedirectAppPicker(
+    minutes: Int,
+    onPick: (AppEntry) -> Unit,
+    onCancel: () -> Unit,
+) {
+    val context = LocalContext.current
+    var query by remember { mutableStateOf("") }
+    val apps = remember {
+        val pm = context.packageManager
+        pm.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0)
+            .map { AppEntry(it.activityInfo.packageName, it.loadLabel(pm).toString()) }
+            .filter { it.pkg != context.packageName }
+            .distinctBy { it.pkg }
+            .sortedBy { it.label.lowercase() }
+    }
+    val filtered = remember(apps, query) {
+        val needle = query.trim().lowercase()
+        if (needle.isEmpty()) {
+            apps
+        } else {
+            apps.filter { it.label.lowercase().contains(needle) || it.pkg.lowercase().contains(needle) }
+                .sortedWith(compareBy({ !it.label.lowercase().startsWith(needle) }, { it.label.lowercase() }))
+        }
+    }
+
+    Text("App zum Üben ($minutes Min.)", fontSize = 24.sp, fontWeight = FontWeight.Bold)
+    OutlinedTextField(
+        value = query,
+        onValueChange = { query = it },
+        placeholder = { Text("App suchen (z. B. Widder)…") },
+        singleLine = true,
+        trailingIcon = if (query.isNotEmpty()) {
+            { TextButton(onClick = { query = "" }) { Text("×", fontSize = 20.sp) } }
+        } else {
+            null
+        },
+        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+    )
+    LazyColumn(Modifier.weight(1f)) {
+        if (filtered.isEmpty()) {
+            item {
+                Text(
+                    "Keine App gefunden",
+                    color = Color.White.copy(alpha = 0.65f),
+                    modifier = Modifier.padding(vertical = 16.dp),
+                )
+            }
+        }
+        items(filtered, key = { it.pkg }) { app ->
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clickable { onPick(app) }
+                    .padding(vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(app.label, fontSize = 16.sp, modifier = Modifier.weight(1f))
+                Text("$minutes Min. →", fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
+            }
+        }
+    }
+    OutlinedButton(onClick = onCancel, modifier = Modifier.fillMaxWidth()) { Text("Abbrechen") }
 }
 
 private fun gateEnabled(context: Context): Boolean {

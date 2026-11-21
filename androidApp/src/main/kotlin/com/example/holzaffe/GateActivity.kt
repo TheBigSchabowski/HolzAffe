@@ -1,5 +1,7 @@
 package com.example.holzaffe
 
+import android.appwidget.AppWidgetHost
+import android.appwidget.AppWidgetManager
 import android.content.Context
 import android.content.Intent
 import android.os.Build
@@ -7,7 +9,9 @@ import android.os.Bundle
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
+import android.view.ViewGroup
 import android.view.WindowManager
+import android.widget.FrameLayout
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -16,9 +20,11 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.LinearProgressIndicator
@@ -42,12 +48,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import kotlin.time.TimeSource
 import kotlinx.coroutines.delay
 
 /**
  * Shown in front of a blocked app: switches between the active entries in the user's gate pool
- * (ear-training quiz and/or timed custom text tasks of 1..3 min) and vibrates briefly on unlock.
+ * (ear-training quiz, timed text tasks, app redirects, or live configured AppWidgets of 1..3 min)
+ * and vibrates briefly on unlock.
  */
 class GateActivity : ComponentActivity() {
     private var target by mutableStateOf("")
@@ -55,8 +63,14 @@ class GateActivity : ComponentActivity() {
     // Incremented on each new gate launch so a fresh challenge/deck is picked per app start.
     private var sessionId by mutableIntStateOf(0)
 
+    // When a live Widget task is displayed and the user taps it (leaving GateActivity into the widget's app),
+    // hand off the remaining countdown to GateService's floating overlay pill.
+    private var pendingWidgetHandoff: Pair<GateTask, () -> Long>? = null
+    private lateinit var widgetHost: AppWidgetHost
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        widgetHost = AppWidgetHost(applicationContext, WIDGET_HOST_ID)
         target = intent.getStringExtra(EXTRA_PACKAGE).orEmpty()
         val store = Store(this)
         val required = store.required
@@ -84,6 +98,7 @@ class GateActivity : ComponentActivity() {
                         }
                         onDispose {
                             window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                            pendingWidgetHandoff = null
                         }
                     }
 
@@ -142,17 +157,86 @@ class GateActivity : ComponentActivity() {
                         }
 
                         is GateChallenge.TimedTask -> {
-                            TimedTaskGate(
-                                appName = appLabel(target),
-                                task = challenge.task,
-                                onComplete = { unlockAndOpen(store, target) },
-                                onCancel = ::goHome,
-                            )
+                            when (challenge.task.kind) {
+                                GateTaskKind.APP -> {
+                                    // Immediately launch the practice app with a floating countdown pill in GateService.
+                                    LaunchedEffect(challenge.task.id, target) {
+                                        val durationMs = challenge.task.minutes * 60_000L
+                                        val launchIntent = packageManager.getLaunchIntentForPackage(challenge.task.targetPackage)
+                                        if (launchIntent != null && GateService.startRedirect(target, challenge.task.targetPackage, durationMs)) {
+                                            launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                            startActivity(launchIntent)
+                                            finish()
+                                        }
+                                    }
+                                    TimedTaskGate(
+                                        appName = appLabel(target),
+                                        task = challenge.task,
+                                        onComplete = { unlockAndOpen(store, target) },
+                                        onCancel = ::goHome,
+                                    )
+                                }
+
+                                GateTaskKind.WIDGET -> {
+                                    WidgetTaskGate(
+                                        appName = appLabel(target),
+                                        task = challenge.task,
+                                        widgetHost = widgetHost,
+                                        onRegisterHandoff = { remainingProvider ->
+                                            pendingWidgetHandoff = challenge.task to remainingProvider
+                                        },
+                                        onFallbackOpenApp = { remainingMs ->
+                                            pendingWidgetHandoff = null
+                                            val pkg = challenge.task.targetPackage
+                                            val launchIntent = if (pkg.isNotEmpty()) packageManager.getLaunchIntentForPackage(pkg) else null
+                                            if (launchIntent != null && GateService.startRedirect(target, pkg, remainingMs)) {
+                                                launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                                startActivity(launchIntent)
+                                                finish()
+                                            }
+                                        },
+                                        onComplete = {
+                                            pendingWidgetHandoff = null
+                                            unlockAndOpen(store, target)
+                                        },
+                                        onCancel = {
+                                            pendingWidgetHandoff = null
+                                            goHome()
+                                        },
+                                    )
+                                }
+
+                                GateTaskKind.TEXT -> {
+                                    TimedTaskGate(
+                                        appName = appLabel(target),
+                                        task = challenge.task,
+                                        onComplete = { unlockAndOpen(store, target) },
+                                        onCancel = ::goHome,
+                                    )
+                                }
+                            }
                         }
                     }
                 }
             }
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        runCatching { widgetHost.startListening() }
+    }
+
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        // If the user tapped the embedded widget (opening e.g. Widder), hand the remaining timer to GateService.
+        val handoff = pendingWidgetHandoff ?: return
+        val (task, remainingProvider) = handoff
+        val remainingMs = remainingProvider()
+        if (remainingMs > 0L) {
+            GateService.startRedirect(target, task.targetPackage, remainingMs)
+        }
+        pendingWidgetHandoff = null
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -167,8 +251,9 @@ class GateActivity : ComponentActivity() {
 
     override fun onStop() {
         super.onStop()
+        runCatching { widgetHost.stopListening() }
         ChordPlayer.stop()
-        // Leaving mid-challenge forfeits the progress.
+        // Leaving mid-challenge forfeits the progress (unless a widget handoff already passed the timer to GateService).
         if (!isChangingConfigurations) finish()
     }
 
@@ -202,6 +287,7 @@ class GateActivity : ComponentActivity() {
 
     /** Back must not fall through to the blocked app underneath. */
     private fun goHome() {
+        pendingWidgetHandoff = null
         startActivity(
             Intent(Intent.ACTION_MAIN)
                 .addCategory(Intent.CATEGORY_HOME)
@@ -212,6 +298,98 @@ class GateActivity : ComponentActivity() {
 
     companion object {
         const val EXTRA_PACKAGE = "package"
+        const val WIDGET_HOST_ID = 0x484F4C5A
+    }
+}
+
+/**
+ * Displays the user's configured AppWidget live inside the gate screen.
+ * Tapping the widget opens the widget's configured section (e.g. a specific Widder mode)
+ * and hands off the remaining 1..3 min countdown to [GateService]'s floating pill.
+ */
+@Composable
+private fun WidgetTaskGate(
+    appName: String,
+    task: GateTask,
+    widgetHost: AppWidgetHost,
+    onRegisterHandoff: (() -> Long) -> Unit,
+    onFallbackOpenApp: (Long) -> Unit,
+    onComplete: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    val totalMs = task.minutes * 60_000L
+    var remainingMs by remember(task.id) { mutableLongStateOf(totalMs) }
+
+    LaunchedEffect(task.id) {
+        onRegisterHandoff { remainingMs }
+        var lastMark = TimeSource.Monotonic.markNow()
+        while (remainingMs > 0L) {
+            delay(100)
+            val now = TimeSource.Monotonic.markNow()
+            remainingMs = (remainingMs - (now - lastMark).inWholeMilliseconds).coerceAtLeast(0L)
+            lastMark = now
+        }
+        onComplete()
+    }
+
+    val secsLeft = ((remainingMs + 999L) / 1000L).toInt().coerceAtLeast(0)
+    val progress = 1f - (remainingMs.toFloat() / totalMs.toFloat()).coerceIn(0f, 1f)
+
+    Column(
+        Modifier.safeDrawingPadding().padding(24.dp).fillMaxSize(),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text("Erst üben, dann $appName", fontSize = 22.sp, textAlign = TextAlign.Center)
+        Text(
+            "${secsLeft / 60}:${(secsLeft % 60).toString().padStart(2, '0')}",
+            fontSize = 60.sp,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.primary,
+        )
+        LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
+        Text(
+            "Tippe auf dein Widget (${task.text}) – der Timer läuft dort weiter und öffnet danach $appName.",
+            fontSize = 13.sp,
+            color = Color.White.copy(alpha = 0.78f),
+            textAlign = TextAlign.Center,
+        )
+        Card(
+            modifier = Modifier.fillMaxWidth().heightIn(min = 140.dp, max = 320.dp),
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        ) {
+            AndroidView(
+                modifier = Modifier.fillMaxWidth().padding(12.dp),
+                factory = { ctx ->
+                    val container = FrameLayout(ctx)
+                    val mgr = AppWidgetManager.getInstance(ctx)
+                    val info = mgr.getAppWidgetInfo(task.widgetId)
+                    if (info != null) {
+                        val hostView = widgetHost.createView(ctx.applicationContext, task.widgetId, info)
+                        hostView.setAppWidget(task.widgetId, info)
+                        container.addView(
+                            hostView,
+                            FrameLayout.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                                ViewGroup.LayoutParams.WRAP_CONTENT,
+                            ),
+                        )
+                    }
+                    container
+                },
+            )
+        }
+        if (task.targetPackage.isNotEmpty()) {
+            Button(
+                onClick = { onFallbackOpenApp(remainingMs) },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("${task.text} direkt öffnen")
+            }
+        }
+        Spacer(Modifier.weight(1f))
+        TextButton(onClick = onCancel) { Text("Doch nicht öffnen") }
     }
 }
 

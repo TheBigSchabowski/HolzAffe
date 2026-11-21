@@ -32,10 +32,12 @@ nur Moll, z. B. nur F-Dur), die erst beim nächsten Öffnen wechselt (alternativ
 Dur+Moll oder komplettes Wirrwarr). Die **Fehler-Anzeigedauer** (Rot/Grün nach falscher Antwort) ist
 einstellbar (Standard 3 Sekunden).
 
-Zusätzlich lassen sich unter **Sperr-Aufgaben** eigene **Text-Aufgaben mit Timer (1–3 Min.)** erstellen
-(z. B. *„Akkorde übers Griffbrett“*) und ins aktive Feld ziehen: Bei mehreren aktiven Einträgen wechselt
-die App-Sperre bei jedem Öffnen zwischen Gehörbildung und deinen Aufgaben. Sobald die App entsperrt wird,
-bestätigt ein kurzes Vibrieren. Unter **Wieder sperren** lässt sich wählen, ob die App nach dem Lösen
+Zusätzlich lassen sich unter **Sperr-Aufgaben** eigene **Text-Aufgaben**, **App-Weiterleitungen**
+(z. B. erst 1–3 Min. Widder, Anki oder Duolingo üben, mit schwebendem Countdown) sowie **konfigurierte
+Android-Widgets** (z. B. ein spezielles Widder-Widget) mit 1–3 Min. Timer erstellen und ins aktive Feld
+ziehen: Bei mehreren aktiven Einträgen wechselt die App-Sperre bei jedem Öffnen dazwischen. Sobald der
+Timer abläuft oder die Challenge gelöst ist, bestätigt ein kurzes Vibrieren und die Ziel-App öffnet sich
+automatisch. Unter **Wieder sperren** lässt sich wählen, ob die App nach dem Lösen
 für eine feste Zeit (**Timer**, Standard 10 Min.), bis zum **Display-Aus** oder nur bis zum **Verlassen
 der App** offen bleibt. In der App-Auswahl hilft eine Suchleiste (z. B. `whats` für WhatsApp),
 und die nötigen Berechtigungen (**Über anderen Apps einblenden** + **Bedienungshilfe**, inkl. Direkt-Link

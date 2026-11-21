@@ -427,10 +427,15 @@ class ChordsTest {
     fun gateTaskCodecAndChallengePickerSwitchBetweenQuizAndCustomTasks() {
         val tasks = listOf(
             GateTask(id = "t1", text = "Akkorde übers Griffbrett, C–G–D!", minutes = 1),
-            GateTask(id = "t2", text = "Pentatonik sauber in 3 Lagen", minutes = 3),
+            GateTask(id = "t2", text = "Widder", minutes = 2, kind = GateTaskKind.APP, targetPackage = "de.privat.widder"),
+            GateTask(id = "t3", text = "Widder Widget", minutes = 3, kind = GateTaskKind.WIDGET, targetPackage = "de.privat.widder", widgetId = 42),
         )
         val encoded = GateTaskCodec.encode(tasks)
         assertEquals(tasks, GateTaskCodec.decode(encoded))
+
+        // Backwards compatibility with legacy 3-field v1.4.0 entries.
+        val legacyDecoded = GateTaskCodec.decode("old1\u001FAlte Aufgabe\u001F2")
+        assertEquals(listOf(GateTask(id = "old1", text = "Alte Aufgabe", minutes = 2, kind = GateTaskKind.TEXT)), legacyDecoded)
 
         // Default: only Quiz active -> always returns Quiz.
         repeat(10) {
@@ -438,7 +443,7 @@ class ChordsTest {
             assertEquals(GateChallenge.Quiz, c)
         }
 
-        // Quiz + 2 custom tasks -> switches without repeating the exact same entry back-to-back.
+        // Quiz + custom tasks -> switches without repeating the exact same entry back-to-back.
         val rnd = Random(17)
         var lastId: String? = null
         val seenIds = mutableSetOf<String>()
@@ -448,6 +453,6 @@ class ChordsTest {
             seenIds += picked.id
             lastId = picked.id
         }
-        assertEquals(setOf(GateChallenge.QUIZ_ID, "t1", "t2"), seenIds)
+        assertEquals(setOf(GateChallenge.QUIZ_ID, "t1", "t2", "t3"), seenIds)
     }
 }

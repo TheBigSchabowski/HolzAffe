@@ -607,14 +607,31 @@ class GateSessionDeck(
     }
 }
 
+/** Type of custom gate task: plain text timer, redirect to another app, or a live configured widget. */
+enum class GateTaskKind(val key: String) {
+    TEXT("text"),
+    APP("app"),
+    WIDGET("widget");
+
+    companion object {
+        fun fromKey(key: String?): GateTaskKind = entries.firstOrNull { it.key == key } ?: TEXT
+    }
+}
+
 /**
- * A user-defined text task for the Android app gate (e.g. "Akkorde übers Griffbrett")
- * that keeps the blocked app locked for [minutes] (1..3) before unlocking with a short vibration.
+ * A user-defined task for the Android app gate that runs for [minutes] (1..3) before
+ * unlocking the blocked app with a short vibration:
+ * - [GateTaskKind.TEXT]: full-screen text prompt with countdown
+ * - [GateTaskKind.APP]: redirects into [targetPackage] with a floating countdown pill
+ * - [GateTaskKind.WIDGET]: shows a bound AppWidget ([widgetId]) and hands off the countdown when tapped
  */
 data class GateTask(
     val id: String,
     val text: String,
     val minutes: Int,
+    val kind: GateTaskKind = GateTaskKind.TEXT,
+    val targetPackage: String = "",
+    val widgetId: Int = -1,
 ) {
     init {
         require(minutes in MIN_MINUTES..MAX_MINUTES) { "minutes must be in $MIN_MINUTES..$MAX_MINUTES, was $minutes" }
@@ -626,15 +643,21 @@ data class GateTask(
     }
 }
 
-/** Encodes/decodes [GateTask] lists safely using ASCII control separators so arbitrary user text works. */
+/** Encodes/decodes [GateTask] lists safely using ASCII control separators (backwards-compatible with 3-field v1.4 entries). */
 object GateTaskCodec {
     private const val RECORD_SEP = '\u001E'
     private const val FIELD_SEP = '\u001F'
 
     fun encode(tasks: List<GateTask>): String = tasks.joinToString(RECORD_SEP.toString()) { t ->
-        val cleanId = t.id.replace(RECORD_SEP, ' ').replace(FIELD_SEP, ' ')
-        val cleanText = t.text.replace(RECORD_SEP, ' ').replace(FIELD_SEP, ' ')
-        "$cleanId$FIELD_SEP$cleanText$FIELD_SEP${t.minutes.coerceIn(GateTask.MIN_MINUTES, GateTask.MAX_MINUTES)}"
+        fun clean(s: String) = s.replace(RECORD_SEP, ' ').replace(FIELD_SEP, ' ')
+        listOf(
+            clean(t.id),
+            clean(t.text),
+            t.minutes.coerceIn(GateTask.MIN_MINUTES, GateTask.MAX_MINUTES).toString(),
+            t.kind.key,
+            clean(t.targetPackage),
+            t.widgetId.toString(),
+        ).joinToString(FIELD_SEP.toString())
     }
 
     fun decode(raw: String): List<GateTask> {
@@ -644,12 +667,24 @@ object GateTaskCodec {
         for (record in raw.split(RECORD_SEP)) {
             if (record.isBlank()) continue
             val parts = record.split(FIELD_SEP)
-            if (parts.size != 3) continue
+            if (parts.size != 3 && parts.size != 6) continue
             val id = parts[0].trim()
             val text = parts[1].trim()
             val minutes = parts[2].toIntOrNull()?.coerceIn(GateTask.MIN_MINUTES, GateTask.MAX_MINUTES) ?: continue
             if (id.isEmpty() || text.isEmpty() || !seen.add(id)) continue
-            result.add(GateTask(id = id, text = text, minutes = minutes))
+            val kind = if (parts.size == 6) GateTaskKind.fromKey(parts[3]) else GateTaskKind.TEXT
+            val targetPackage = if (parts.size == 6) parts[4].trim() else ""
+            val widgetId = if (parts.size == 6) parts[5].toIntOrNull() ?: -1 else -1
+            result.add(
+                GateTask(
+                    id = id,
+                    text = text,
+                    minutes = minutes,
+                    kind = kind,
+                    targetPackage = targetPackage,
+                    widgetId = widgetId,
+                )
+            )
         }
         return result
     }
