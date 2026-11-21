@@ -374,4 +374,80 @@ class ChordsTest {
         val deckB = GateSessionDeck(GameMode.DEGREES, rnd = Random(2)).pool.map { it.id }.toSet()
         assertNotEquals(deckA, deckB, "separate app-start sessions should pick different 7-exercise pools")
     }
+
+    @Test
+    fun gateSessionDeckKeyModesWorkAsExpected() {
+        // 1. Default SINGLE_KEY_TONALITY: one key AND only Dur or only Moll per app opening.
+        for (mode in listOf(GameMode.DEGREES, GameMode.CADENCES, GameMode.CHORD_TYPES)) {
+            val deck = GateSessionDeck(mode = mode, keyMode = GateKeyMode.SINGLE_KEY_TONALITY, rnd = Random(99 + mode.ordinal))
+            val expectedPc = assertNotNull(deck.sessionKey, "SINGLE_KEY_TONALITY must pick a sessionKey").mod(12)
+            val expectedMinor = assertNotNull(deck.sessionMinor, "SINGLE_KEY_TONALITY must pick Dur or Moll")
+            repeat(15) { step ->
+                val q = deck.nextQuestion()
+                val firstChordPcs = q.chords.first().map { it.mod(12) }.toSet()
+                assertTrue(
+                    expectedPc in firstChordPcs,
+                    "mode=$mode step=$step tonic pitch class $expectedPc missing from ${q.chords.first()}",
+                )
+                when (val ex = QuestionFactory.exerciseById(q.progressionId)) {
+                    is Progression -> assertEquals(expectedMinor, ex.minor, "must stay strictly Dur or Moll")
+                    is Cadence -> assertEquals(expectedMinor, ex.minor, "must stay strictly Dur or Moll")
+                    else -> Unit
+                }
+            }
+        }
+
+        // Across multiple app openings, both key and Dur/Moll must vary.
+        val sessionKeys = (1..20).mapNotNull { seed ->
+            GateSessionDeck(GameMode.DEGREES, keyMode = GateKeyMode.SINGLE_KEY_TONALITY, rnd = Random(seed)).sessionKey
+        }.toSet()
+        val sessionGenders = (1..20).mapNotNull { seed ->
+            GateSessionDeck(GameMode.DEGREES, keyMode = GateKeyMode.SINGLE_KEY_TONALITY, rnd = Random(seed)).sessionMinor
+        }.toSet()
+        assertTrue(sessionKeys.size > 1, "session key should vary across separate app openings")
+        assertEquals(setOf(false, true), sessionGenders, "Dur and Moll should both appear across app openings")
+
+        // 2. SAME_ROOT: single root note, allows both Dur and Moll in the same session.
+        val sameRootDeck = GateSessionDeck(GameMode.DEGREES, maxPoolSize = 18, keyMode = GateKeyMode.SAME_ROOT, rnd = Random(7))
+        val rootPc = assertNotNull(sameRootDeck.sessionKey).mod(12)
+        val gendersInSameRoot = (1..18).map {
+            val q = sameRootDeck.nextQuestion()
+            assertTrue(rootPc in q.chords.first().map { it.mod(12) })
+            (QuestionFactory.exerciseById(q.progressionId) as Progression).minor
+        }.toSet()
+        assertEquals(setOf(false, true), gendersInSameRoot)
+
+        // 3. RANDOM ("Wirrwarr"): no fixed session key.
+        val randomDeck = GateSessionDeck(GameMode.DEGREES, keyMode = GateKeyMode.RANDOM, rnd = Random(11))
+        assertEquals(null, randomDeck.sessionKey)
+        assertEquals(null, randomDeck.sessionMinor)
+    }
+
+    @Test
+    fun gateTaskCodecAndChallengePickerSwitchBetweenQuizAndCustomTasks() {
+        val tasks = listOf(
+            GateTask(id = "t1", text = "Akkorde übers Griffbrett, C–G–D!", minutes = 1),
+            GateTask(id = "t2", text = "Pentatonik sauber in 3 Lagen", minutes = 3),
+        )
+        val encoded = GateTaskCodec.encode(tasks)
+        assertEquals(tasks, GateTaskCodec.decode(encoded))
+
+        // Default: only Quiz active -> always returns Quiz.
+        repeat(10) {
+            val c = GateChallengePicker.pickNext(includeQuiz = true, activeTasks = emptyList(), lastId = GateChallenge.QUIZ_ID)
+            assertEquals(GateChallenge.Quiz, c)
+        }
+
+        // Quiz + 2 custom tasks -> switches without repeating the exact same entry back-to-back.
+        val rnd = Random(17)
+        var lastId: String? = null
+        val seenIds = mutableSetOf<String>()
+        repeat(40) {
+            val picked = GateChallengePicker.pickNext(includeQuiz = true, activeTasks = tasks, lastId = lastId, rnd = rnd)
+            assertNotEquals(lastId, picked.id, "must switch to a different active challenge on consecutive openings")
+            seenIds += picked.id
+            lastId = picked.id
+        }
+        assertEquals(setOf(GateChallenge.QUIZ_ID, "t1", "t2"), seenIds)
+    }
 }

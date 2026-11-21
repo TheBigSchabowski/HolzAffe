@@ -4,6 +4,9 @@
     <!-- Allows GateService to reliably launch GateActivity over blocked apps on Android 10+ (BAL exemption). -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
+    <!-- Short haptic confirmation when a timed task or chord gate unlocks the target app. -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+
     <!-- Needed to list the installed apps the user can put behind the gate. -->
     <queries>
         <intent>

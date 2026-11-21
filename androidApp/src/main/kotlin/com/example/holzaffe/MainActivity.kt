@@ -13,16 +13,19 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
@@ -48,6 +51,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 
+private enum class MainScreen { HOME, APPS, TASKS }
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -55,17 +60,23 @@ class MainActivity : ComponentActivity() {
         setContent {
             AppTheme {
                 Surface(Modifier.fillMaxSize()) {
-                    var pickingApps by remember { mutableStateOf(false) }
+                    var screen by remember { mutableStateOf(MainScreen.HOME) }
                     val control = remember { RunControl() }
-                    BackHandler(enabled = pickingApps || control.running) {
-                        pickingApps = false
+                    BackHandler(enabled = screen != MainScreen.HOME || control.running) {
+                        screen = MainScreen.HOME
                         control.running = false
                     }
                     Column(Modifier.safeDrawingPadding().padding(24.dp).fillMaxSize()) {
-                        if (pickingApps) {
-                            Apps(store, onExit = { pickingApps = false })
-                        } else {
-                            GameApp(store, control) { GateSection(store, onApps = { pickingApps = true }) }
+                        when (screen) {
+                            MainScreen.APPS -> Apps(store, onExit = { screen = MainScreen.HOME })
+                            MainScreen.TASKS -> GateTasksScreen(store, onExit = { screen = MainScreen.HOME })
+                            MainScreen.HOME -> GameApp(store, control) {
+                                GateSection(
+                                    store = store,
+                                    onApps = { screen = MainScreen.APPS },
+                                    onTasks = { screen = MainScreen.TASKS },
+                                )
+                            }
                         }
                     }
                 }
@@ -81,12 +92,13 @@ class MainActivity : ComponentActivity() {
 
 /** The app-gate block at the bottom of the home screen, with One-Sec-style permission setup. */
 @Composable
-private fun ColumnScope.GateSection(store: Store, onApps: () -> Unit) {
+private fun ColumnScope.GateSection(store: Store, onApps: () -> Unit, onTasks: () -> Unit) {
     val context = LocalContext.current
     var overlayOn by remember { mutableStateOf(Settings.canDrawOverlays(context)) }
     var gateOn by remember { mutableStateOf(gateEnabled(context)) }
     var required by remember { mutableIntStateOf(store.required) }
     var gatePoolSize by remember { mutableIntStateOf(store.gatePoolSize) }
+    var gateKeyMode by remember { mutableStateOf(store.gateKeyMode) }
     var minutes by remember { mutableIntStateOf(store.unlockMinutes) }
     var gateMode by remember { mutableStateOf(store.gateMode) }
 
@@ -164,9 +176,51 @@ private fun ColumnScope.GateSection(store: Store, onApps: () -> Unit) {
     }
 
     OutlinedButton(onClick = onApps, modifier = Modifier.fillMaxWidth()) { Text("Gesperrte Apps wählen") }
+    val activeTaskCount = store.activeGateTasks().size
+    val poolSummary = when {
+        store.gateIncludeQuiz && activeTaskCount > 0 -> "Gehörbildung + $activeTaskCount Aufgabe(n)"
+        activeTaskCount > 0 -> "$activeTaskCount eigene Aufgabe(n)"
+        else -> "Nur Gehörbildung"
+    }
+    OutlinedButton(onClick = onTasks, modifier = Modifier.fillMaxWidth()) {
+        Text("Sperr-Aufgaben: $poolSummary")
+    }
     Text("Modus der App-Sperre", fontSize = 14.sp)
     ModePicker(selected = gateMode, onSelect = { gateMode = it; store.gateMode = it })
     Stepper("Wechselnde Aufgaben pro Sperre", gatePoolSize, 2..18) { gatePoolSize = it; store.gatePoolSize = it }
+    Text("Tonart pro Sperre", fontSize = 14.sp)
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        GateKeyMode.entries.forEach { option ->
+            val selected = option == gateKeyMode
+            Button(
+                onClick = { gateKeyMode = option; store.gateKeyMode = option },
+                shape = RoundedCornerShape(10.dp),
+                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+                    contentColor = if (selected) MaterialTheme.colorScheme.onPrimary else Color.White,
+                ),
+                modifier = Modifier.weight(1f).height(38.dp),
+            ) {
+                Text(
+                    option.label,
+                    fontSize = 13.sp,
+                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                    maxLines = 1,
+                    softWrap = false,
+                )
+            }
+        }
+    }
+    Text(
+        when (gateKeyMode) {
+            GateKeyMode.SINGLE_KEY_TONALITY -> "Nur eine Tonart (z. B. nur F-Dur oder nur F-Moll) – wechselt bei jedem Öffnen"
+            GateKeyMode.SAME_ROOT -> "Gleicher Grundton (z. B. F-Dur & F-Moll) – wechselt bei jedem Öffnen"
+            GateKeyMode.RANDOM -> "Jede Aufgabe in beliebiger Tonart (Dur & Moll gemischt)"
+        },
+        fontSize = 12.sp,
+        color = Color.White.copy(alpha = 0.72f),
+    )
     Stepper("Richtige zum Öffnen", required, 1..20) { required = it; store.required = it }
     Stepper("Minuten offen danach", minutes, 1..60) { minutes = it; store.unlockMinutes = it }
 }
@@ -265,6 +319,183 @@ private fun ColumnScope.Apps(store: Store, onExit: () -> Unit) {
         }
     }
     Button(onClick = onExit, modifier = Modifier.fillMaxWidth()) { Text("Fertig") }
+}
+
+/**
+ * Submenu to create timed text tasks (1..3 min) and move them into or out of the active
+ * app-gate rotation field. By default only the ear-training quiz is active; adding custom
+ * tasks makes the gate alternate between all active entries on each app opening.
+ */
+@Composable
+private fun ColumnScope.GateTasksScreen(store: Store, onExit: () -> Unit) {
+    var tasks by remember { mutableStateOf(store.gateTasks) }
+    var activeIds by remember { mutableStateOf(store.gateActiveTaskIds) }
+    var includeQuiz by remember { mutableStateOf(store.gateIncludeQuiz) }
+    var newText by remember { mutableStateOf("") }
+    var newMinutes by remember { mutableIntStateOf(1) }
+
+    val activeTasks = tasks.filter { it.id in activeIds }
+    val inactiveTasks = tasks.filter { it.id !in activeIds }
+    val totalActiveCount = (if (includeQuiz) 1 else 0) + activeTasks.size
+
+    fun persist(nextTasks: List<GateTask> = tasks, nextActive: Set<String> = activeIds, nextQuiz: Boolean = includeQuiz) {
+        val validIds = nextTasks.map { it.id }.toSet()
+        val cleanedActive = nextActive.intersect(validIds)
+        // Always keep at least one active entry (fall back to ear-training if all tasks are removed).
+        val safeQuiz = if (cleanedActive.isEmpty()) true else nextQuiz
+        tasks = nextTasks
+        activeIds = cleanedActive
+        includeQuiz = safeQuiz
+        store.gateTasks = nextTasks
+        store.gateActiveTaskIds = cleanedActive
+        store.gateIncludeQuiz = safeQuiz
+    }
+
+    Text("Sperr-Aufgaben", fontSize = 26.sp, fontWeight = FontWeight.Bold)
+    Text(
+        "Ziehe eigene Aufgaben (1–3 Min.) ins aktive Feld – die App-Sperre wechselt dann bei jedem Öffnen dazwischen.",
+        fontSize = 13.sp,
+        color = Color.White.copy(alpha = 0.75f),
+        modifier = Modifier.padding(top = 4.dp, bottom = 10.dp),
+    )
+
+    LazyColumn(
+        Modifier.weight(1f),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        // Active rotation field (defaults to only ear-training).
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+            ) {
+                Column(
+                    Modifier.fillMaxWidth().padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        "Aktiv in der Sperre ($totalActiveCount)",
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    if (includeQuiz) {
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Text("🎵 Gehörbildung (aktueller Modus)", Modifier.weight(1f), fontSize = 14.sp)
+                            if (totalActiveCount > 1) {
+                                TextButton(onClick = { persist(nextQuiz = false) }) { Text("Raus") }
+                            }
+                        }
+                    }
+                    activeTasks.forEach { task ->
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(task.text, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                                Text("${task.minutes} Min. · vibriert beim Öffnen", fontSize = 12.sp, color = Good)
+                            }
+                            TextButton(onClick = { persist(nextActive = activeIds - task.id) }) { Text("Raus") }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Create a new 1..3 min task.
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+            ) {
+                Column(
+                    Modifier.fillMaxWidth().padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text("Neue Aufgabe erstellen", fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                    OutlinedTextField(
+                        value = newText,
+                        onValueChange = { newText = it },
+                        placeholder = { Text("z. B. Akkorde übers Griffbrett") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        (GateTask.MIN_MINUTES..GateTask.MAX_MINUTES).forEach { min ->
+                            val selected = min == newMinutes
+                            Button(
+                                onClick = { newMinutes = min },
+                                shape = RoundedCornerShape(10.dp),
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.background,
+                                    contentColor = if (selected) MaterialTheme.colorScheme.onPrimary else Color.White,
+                                ),
+                                modifier = Modifier.weight(1f).height(36.dp),
+                            ) {
+                                Text("$min Min.", fontSize = 13.sp, fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium)
+                            }
+                        }
+                    }
+                    Button(
+                        onClick = {
+                            val trimmed = newText.trim()
+                            if (trimmed.isNotEmpty()) {
+                                val created = GateTask(
+                                    id = "t_${System.currentTimeMillis()}_${tasks.size}",
+                                    text = trimmed,
+                                    minutes = newMinutes,
+                                )
+                                persist(nextTasks = tasks + created)
+                                newText = ""
+                            }
+                        },
+                        enabled = newText.isNotBlank(),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("+ Aufgabe speichern")
+                    }
+                }
+            }
+        }
+
+        // Available items that can be moved into the active field.
+        if (!includeQuiz || inactiveTasks.isNotEmpty()) {
+            item {
+                Text(
+                    "Verfügbar (ins aktive Feld ziehen)",
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+            }
+            if (!includeQuiz) {
+                item(key = GateChallenge.QUIZ_ID) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text("🎵 Gehörbildung (aktueller Modus)", Modifier.weight(1f), fontSize = 14.sp)
+                        Button(onClick = { persist(nextQuiz = true) }) { Text("+ Aktiv", fontSize = 13.sp) }
+                    }
+                }
+            }
+            items(inactiveTasks, key = { it.id }) { task ->
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(task.text, fontSize = 14.sp)
+                        Text("${task.minutes} Min.", fontSize = 12.sp, color = Color.White.copy(alpha = 0.7f))
+                    }
+                    Button(onClick = { persist(nextActive = activeIds + task.id) }) { Text("+ Aktiv", fontSize = 13.sp) }
+                    TextButton(onClick = { persist(nextTasks = tasks.filterNot { it.id == task.id }) }) {
+                        Text("×", color = Bad, fontSize = 18.sp)
+                    }
+                }
+            }
+        }
+    }
+    Button(onClick = onExit, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text("Fertig") }
 }
 
 private fun gateEnabled(context: Context): Boolean {

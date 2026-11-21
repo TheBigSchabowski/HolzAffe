@@ -116,6 +116,7 @@ fun QuizPanel(
 ) {
     val review = remember(scores) { ReviewQueue.decode(scores?.reviewQueue.orEmpty()) }
     val drawQuestion = { nextQuestion?.invoke() ?: review.nextQuestion(mode) }
+    val missDelayMs = (scores?.missDelaySec ?: DEFAULT_MISS_DELAY_SEC).coerceIn(1, 10) * 1000L
     var question by remember(mode, nextQuestion) { mutableStateOf(drawQuestion()) }
     var lastQuestion by remember(mode, nextQuestion) { mutableStateOf<Question?>(null) }
     var picked by remember(mode, nextQuestion) { mutableStateOf<Int?>(null) }
@@ -130,8 +131,8 @@ fun QuizPanel(
     LaunchedEffect(picked, active, paused) {
         val p = picked ?: return@LaunchedEffect
         if (!active || paused) return@LaunchedEffect
-        // A miss stays on screen a little longer so the right answer can sink in.
-        delay(if (p == question.correct) 250 else 1100)
+        // A miss stays on screen for the user-configured duration (default 3s) so the right answer can sink in.
+        delay(if (p == question.correct) 250L else missDelayMs)
         lastQuestion = question
         picked = null
         question = drawQuestion()
@@ -387,6 +388,7 @@ class RunControl {
 @Composable
 private fun Home(scores: Scores, onRun: () -> Unit, extra: @Composable ColumnScope.() -> Unit) {
     var maxErrors by remember { mutableIntStateOf(scores.maxErrors) }
+    var missDelaySec by remember { mutableIntStateOf(scores.missDelaySec) }
     var mode by remember { mutableStateOf(scores.gameMode) }
     val pending = ReviewQueue.decode(scores.reviewQueue).pendingCount(mode)
 
@@ -416,6 +418,10 @@ private fun Home(scores: Scores, onRun: () -> Unit, extra: @Composable ColumnSco
             if (maxErrors == 0) "Abbruch nach Fehlern: aus" else "Abbruch nach Fehlern",
             maxErrors, 0..10,
         ) { maxErrors = it; scores.maxErrors = it }
+        Stepper("Fehler-Anzeige (Sek.)", missDelaySec, 1..10) {
+            missDelaySec = it
+            scores.missDelaySec = it
+        }
         extra()
     }
 }

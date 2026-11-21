@@ -286,24 +286,28 @@ object QuestionFactory {
         return forExercise(pool[rnd.nextInt(pool.size)], rnd)
     }
 
-    /** Builds a question for a specific [exercise] in a random key and voicing. */
-    fun forExercise(exercise: Exercise, rnd: Random = Random): Question = when (exercise) {
-        is Progression -> buildProgression(exercise, rnd)
-        is ChordTypeExercise -> buildChordType(exercise, rnd)
-        is Cadence -> buildCadence(exercise, rnd)
-        is InversionExercise -> buildInversion(exercise, rnd)
+    /**
+     * Builds a question for a specific [exercise].
+     * When [fixedKey] (MIDI root in 48..59) is supplied, the question stays in that key instead
+     * of picking a new random key every time.
+     */
+    fun forExercise(exercise: Exercise, rnd: Random = Random, fixedKey: Int? = null): Question = when (exercise) {
+        is Progression -> buildProgression(exercise, rnd, fixedKey)
+        is ChordTypeExercise -> buildChordType(exercise, rnd, fixedKey)
+        is Cadence -> buildCadence(exercise, rnd, fixedKey)
+        is InversionExercise -> buildInversion(exercise, rnd, fixedKey)
     }
 
     fun exerciseById(id: String): Exercise? = EXERCISE_BY_ID[id]
 
     fun progressionById(id: String): Progression? = EXERCISE_BY_ID[id] as? Progression
 
-    private fun buildProgression(progression: Progression, rnd: Random): Question {
+    private fun buildProgression(progression: Progression, rnd: Random, fixedKey: Int?): Question {
         val targets = if (progression.minor) MINOR_TARGETS else MAJOR_TARGETS
         val tonic = progression.tonic
         val correct = targets.indexOf(progression.target)
         require(correct >= 0) { "Unknown target ${progression.target.label} for mode minor=${progression.minor}" }
-        val key = 48 + rnd.nextInt(12) // tonic somewhere in C3..B3
+        val key = fixedKey ?: (48 + rnd.nextInt(12)) // tonic somewhere in C3..B3
 
         val first = voice(tonic, key, rnd.nextInt(3), near = null)
         val second = voice(progression.target, key, rnd.nextInt(3), near = first.first())
@@ -321,9 +325,9 @@ object QuestionFactory {
         )
     }
 
-    private fun buildChordType(exercise: ChordTypeExercise, rnd: Random): Question {
+    private fun buildChordType(exercise: ChordTypeExercise, rnd: Random, fixedKey: Int?): Question {
         val correct = CHORD_TYPE_EXERCISES.indexOf(exercise)
-        val key = 48 + rnd.nextInt(12)
+        val key = fixedKey ?: (48 + rnd.nextInt(12))
         val intervals = exercise.type.intervals
         // Keep root in the bass so sus2 and sus4 stay unambiguously distinct.
         val notes = if (rnd.nextBoolean()) {
@@ -344,11 +348,11 @@ object QuestionFactory {
         )
     }
 
-    private fun buildCadence(cadence: Cadence, rnd: Random): Question {
+    private fun buildCadence(cadence: Cadence, rnd: Random, fixedKey: Int?): Question {
         val pool = if (cadence.minor) MINOR_CADENCES else MAJOR_CADENCES
         val correct = pool.indexOf(cadence)
         require(correct >= 0) { "Unknown cadence ${cadence.id}" }
-        val key = 48 + rnd.nextInt(12)
+        val key = fixedKey ?: (48 + rnd.nextInt(12))
 
         val first = voice(cadence.tonic, key, rnd.nextInt(3), near = null)
         val second = voice(cadence.second, key, rnd.nextInt(3), near = first.first())
@@ -368,9 +372,9 @@ object QuestionFactory {
         )
     }
 
-    private fun buildInversion(exercise: InversionExercise, rnd: Random): Question {
+    private fun buildInversion(exercise: InversionExercise, rnd: Random, fixedKey: Int?): Question {
         val correct = INVERSION_EXERCISES.indexOf(exercise)
-        val bass = 48 + rnd.nextInt(12) // uniform bass so inversion cannot be guessed from pitch height
+        val bass = fixedKey ?: (48 + rnd.nextInt(12)) // uniform bass so inversion cannot be guessed from pitch height
         val base = exercise.intervals
         val rotated = base.drop(exercise.inversion) + base.take(exercise.inversion).map { it + 12 }
         val shift = bass - rotated.first()
@@ -479,6 +483,20 @@ class ReviewQueue(initial: List<Entry> = emptyList()) {
     }
 }
 
+/** How key and major/minor tonality behave during a single Android app-gate opening. */
+enum class GateKeyMode(val key: String, val label: String) {
+    /** Standard: one key AND only major OR only minor per app opening (e.g. only F-Dur or only F-Moll). */
+    SINGLE_KEY_TONALITY("single_tonality", "1 Tonart"),
+    /** Same tonic root per app opening, mixing parallel major and minor (e.g. F-Dur + F-Moll). */
+    SAME_ROOT("same_root", "Dur + Moll"),
+    /** Random key and major/minor on every single question. */
+    RANDOM("random", "Wirrwarr");
+
+    companion object {
+        fun fromKey(key: String?): GateKeyMode = entries.firstOrNull { it.key == key } ?: SINGLE_KEY_TONALITY
+    }
+}
+
 /**
  * Per-app-launch deck for the Android app gate.
  *
@@ -490,10 +508,23 @@ class ReviewQueue(initial: List<Entry> = emptyList()) {
 class GateSessionDeck(
     val mode: GameMode,
     maxPoolSize: Int = DEFAULT_POOL_SIZE,
+    val keyMode: GateKeyMode = GateKeyMode.SINGLE_KEY_TONALITY,
     private val rnd: Random = Random,
 ) {
     /** Fixed subset of distinct exercises active for this single app-start challenge. */
     val pool: List<Exercise>
+
+    /**
+     * Single tonic MIDI root (C3..B3) held constant throughout this app-start session when
+     * [keyMode] is not [GateKeyMode.RANDOM]; changes on every new app opening.
+     */
+    val sessionKey: Int? = if (keyMode != GateKeyMode.RANDOM) 48 + rnd.nextInt(12) else null
+
+    /**
+     * When [keyMode] is [GateKeyMode.SINGLE_KEY_TONALITY], locks the session to either only
+     * major (`false`) or only minor (`true`) progressions/cadences; changes on every new app opening.
+     */
+    val sessionMinor: Boolean? = if (keyMode == GateKeyMode.SINGLE_KEY_TONALITY) rnd.nextBoolean() else null
 
     private val bag = ArrayDeque<Exercise>()
     private var lastId: String? = null
@@ -502,7 +533,18 @@ class GateSessionDeck(
     init {
         require(maxPoolSize >= 1) { "maxPoolSize must be >= 1, was $maxPoolSize" }
         val source = if (mode == GameMode.MIX) ALL_EXERCISES else EXERCISES_BY_MODE.getValue(mode)
-        pool = source.shuffled(rnd).take(maxPoolSize.coerceAtMost(source.size))
+        val filtered = if (sessionMinor != null) {
+            source.filter { ex ->
+                when (ex) {
+                    is Progression -> ex.minor == sessionMinor
+                    is Cadence -> ex.minor == sessionMinor
+                    is ChordTypeExercise, is InversionExercise -> true
+                }
+            }
+        } else {
+            source
+        }
+        pool = filtered.shuffled(rnd).take(maxPoolSize.coerceAtMost(filtered.size))
     }
 
     /** Returns the next question drawn exclusively from [pool] in a non-repeating shuffled order. */
@@ -510,7 +552,7 @@ class GateSessionDeck(
         if (bag.isEmpty()) refillBag()
         val exercise = bag.removeFirst()
         lastId = exercise.id
-        return QuestionFactory.forExercise(exercise, rnd)
+        return QuestionFactory.forExercise(exercise, rnd, fixedKey = sessionKey)
     }
 
     /**
@@ -548,6 +590,97 @@ class GateSessionDeck(
     companion object {
         const val DEFAULT_POOL_SIZE = 7
         private const val MAX_SHUFFLE_ATTEMPTS = 16
+    }
+}
+
+/**
+ * A user-defined text task for the Android app gate (e.g. "Akkorde übers Griffbrett")
+ * that keeps the blocked app locked for [minutes] (1..3) before unlocking with a short vibration.
+ */
+data class GateTask(
+    val id: String,
+    val text: String,
+    val minutes: Int,
+) {
+    init {
+        require(minutes in MIN_MINUTES..MAX_MINUTES) { "minutes must be in $MIN_MINUTES..$MAX_MINUTES, was $minutes" }
+    }
+
+    companion object {
+        const val MIN_MINUTES = 1
+        const val MAX_MINUTES = 3
+    }
+}
+
+/** Encodes/decodes [GateTask] lists safely using ASCII control separators so arbitrary user text works. */
+object GateTaskCodec {
+    private const val RECORD_SEP = '\u001E'
+    private const val FIELD_SEP = '\u001F'
+
+    fun encode(tasks: List<GateTask>): String = tasks.joinToString(RECORD_SEP.toString()) { t ->
+        val cleanId = t.id.replace(RECORD_SEP, ' ').replace(FIELD_SEP, ' ')
+        val cleanText = t.text.replace(RECORD_SEP, ' ').replace(FIELD_SEP, ' ')
+        "$cleanId$FIELD_SEP$cleanText$FIELD_SEP${t.minutes.coerceIn(GateTask.MIN_MINUTES, GateTask.MAX_MINUTES)}"
+    }
+
+    fun decode(raw: String): List<GateTask> {
+        if (raw.isBlank()) return emptyList()
+        val seen = HashSet<String>()
+        val result = mutableListOf<GateTask>()
+        for (record in raw.split(RECORD_SEP)) {
+            if (record.isBlank()) continue
+            val parts = record.split(FIELD_SEP)
+            if (parts.size != 3) continue
+            val id = parts[0].trim()
+            val text = parts[1].trim()
+            val minutes = parts[2].toIntOrNull()?.coerceIn(GateTask.MIN_MINUTES, GateTask.MAX_MINUTES) ?: continue
+            if (id.isEmpty() || text.isEmpty() || !seen.add(id)) continue
+            result.add(GateTask(id = id, text = text, minutes = minutes))
+        }
+        return result
+    }
+}
+
+/** One entry in the Android app-gate rotation pool: either the ear-training quiz or a timed text task. */
+sealed interface GateChallenge {
+    val id: String
+
+    data object Quiz : GateChallenge {
+        override val id: String = QUIZ_ID
+    }
+
+    data class TimedTask(val task: GateTask) : GateChallenge {
+        override val id: String get() = task.id
+    }
+
+    companion object {
+        const val QUIZ_ID = "__quiz__"
+    }
+}
+
+/**
+ * Picks the next challenge from the user's active gate pool.
+ * When multiple entries are active (e.g. ear-training + 2 custom tasks), avoids picking
+ * [lastId] twice in a row so the gate visibly switches between them on each app opening.
+ */
+object GateChallengePicker {
+    fun pickNext(
+        includeQuiz: Boolean,
+        activeTasks: List<GateTask>,
+        lastId: String? = null,
+        rnd: Random = Random,
+    ): GateChallenge {
+        val candidates = buildList {
+            if (includeQuiz) add(GateChallenge.Quiz)
+            activeTasks.forEach { add(GateChallenge.TimedTask(it)) }
+        }
+        if (candidates.isEmpty()) return GateChallenge.Quiz
+        val pool = if (candidates.size > 1 && lastId != null) {
+            candidates.filter { it.id != lastId }.ifEmpty { candidates }
+        } else {
+            candidates
+        }
+        return pool[rnd.nextInt(pool.size)]
     }
 }
 
@@ -625,6 +758,9 @@ expect object ChordPlayer {
     fun stop()
 }
 
+/** Default duration (in seconds) that a wrong/correct answer stays highlighted after a miss. */
+const val DEFAULT_MISS_DELAY_SEC = 3
+
 /** Persisted game state; each platform backs it with its own preferences store. */
 interface Scores {
     /** Most correct answers in one 1:30 run (legacy alias for [GameMode.DEGREES]). */
@@ -638,6 +774,9 @@ interface Scores {
 
     /** Wrong answers that end a run early; 0 turns the limit off. */
     var maxErrors: Int
+
+    /** Seconds a missed answer stays highlighted (red/green) before advancing (1..10, default 3). */
+    var missDelaySec: Int
 
     /** Serialized mistake-review queue so missed exercises repeat across runs and app starts. */
     var reviewQueue: String

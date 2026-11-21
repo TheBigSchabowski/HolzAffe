@@ -26,6 +26,9 @@ private class DesktopScores : Scores {
     override var maxErrors: Int
         get() = prefs.getInt("maxErrors", 0)
         set(v) = prefs.putInt("maxErrors", v)
+    override var missDelaySec: Int
+        get() = prefs.getInt("missDelaySec", DEFAULT_MISS_DELAY_SEC).coerceIn(1, 10)
+        set(v) = prefs.putInt("missDelaySec", v.coerceIn(1, 10))
     override var reviewQueue: String
         get() = prefs.get("reviewQueue", "")
         set(v) = prefs.put("reviewQueue", v)
