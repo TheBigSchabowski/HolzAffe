@@ -94,15 +94,32 @@ class Store(context: Context) : Scores {
         return gateTasks.filter { it.id in activeIds }
     }
 
-    /** How long an app stays open after a passed challenge. */
+    /** When an unlocked app locks again (default: timer for [unlockMinutes]). */
+    var gateRelockMode: GateRelockMode
+        get() = GateRelockMode.fromKey(prefs.getString("gateRelockMode", null))
+        set(v) = prefs.edit().putString("gateRelockMode", v.key).apply()
+
+    /** How long an app stays open after a passed challenge (used in [GateRelockMode.TIMER]). */
     var unlockMinutes: Int
         get() = prefs.getInt("unlockMinutes", 10)
         set(v) = prefs.edit().putInt("unlockMinutes", v).apply()
 
     fun unlock(pkg: String) {
-        prefs.edit()
-            .putLong("unlock:$pkg", System.currentTimeMillis() + unlockMinutes * 60_000L)
-            .apply()
+        val until = when (gateRelockMode) {
+            GateRelockMode.TIMER -> System.currentTimeMillis() + unlockMinutes * 60_000L
+            GateRelockMode.ON_SCREEN_OFF, GateRelockMode.ON_APP_LEAVE -> Long.MAX_VALUE
+        }
+        prefs.edit().putLong("unlock:$pkg", until).apply()
+    }
+
+    fun relock(pkg: String) {
+        prefs.edit().remove("unlock:$pkg").apply()
+    }
+
+    fun clearAllUnlocks() {
+        val editor = prefs.edit()
+        prefs.all.keys.filter { it.startsWith("unlock:") }.forEach { editor.remove(it) }
+        editor.apply()
     }
 
     fun isUnlocked(pkg: String): Boolean =

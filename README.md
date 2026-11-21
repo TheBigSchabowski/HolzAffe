@@ -35,7 +35,9 @@ einstellbar (Standard 3 Sekunden).
 Zusätzlich lassen sich unter **Sperr-Aufgaben** eigene **Text-Aufgaben mit Timer (1–3 Min.)** erstellen
 (z. B. *„Akkorde übers Griffbrett“*) und ins aktive Feld ziehen: Bei mehreren aktiven Einträgen wechselt
 die App-Sperre bei jedem Öffnen zwischen Gehörbildung und deinen Aufgaben. Sobald die App entsperrt wird,
-bestätigt ein kurzes Vibrieren. In der App-Auswahl hilft eine Suchleiste (z. B. `whats` für WhatsApp),
+bestätigt ein kurzes Vibrieren. Unter **Wieder sperren** lässt sich wählen, ob die App nach dem Lösen
+für eine feste Zeit (**Timer**, Standard 10 Min.), bis zum **Display-Aus** oder nur bis zum **Verlassen
+der App** offen bleibt. In der App-Auswahl hilft eine Suchleiste (z. B. `whats` für WhatsApp),
 und die nötigen Berechtigungen (**Über anderen Apps einblenden** + **Bedienungshilfe**, inkl. Direkt-Link
 zur App-Info für Android 13+ „Eingeschränkte Einstellungen“) lassen sich direkt in HolzAffe einrichten.
 Es werden keine Bildschirminhalte gelesen.

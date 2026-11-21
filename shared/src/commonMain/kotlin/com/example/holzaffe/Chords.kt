@@ -497,6 +497,20 @@ enum class GateKeyMode(val key: String, val label: String) {
     }
 }
 
+/** When a temporarily unlocked blocked app locks again on Android. */
+enum class GateRelockMode(val key: String, val label: String) {
+    /** Standard: stays open for the configured number of minutes. */
+    TIMER("timer", "Timer"),
+    /** Locks again as soon as the phone screen turns off. */
+    ON_SCREEN_OFF("screen_off", "Display aus"),
+    /** Locks again immediately when leaving the app or turning the screen off. */
+    ON_APP_LEAVE("app_leave", "App zu");
+
+    companion object {
+        fun fromKey(key: String?): GateRelockMode = entries.firstOrNull { it.key == key } ?: TIMER
+    }
+}
+
 /**
  * Per-app-launch deck for the Android app gate.
  *

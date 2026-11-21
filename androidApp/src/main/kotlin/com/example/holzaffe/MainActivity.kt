@@ -99,6 +99,7 @@ private fun ColumnScope.GateSection(store: Store, onApps: () -> Unit, onTasks: (
     var required by remember { mutableIntStateOf(store.required) }
     var gatePoolSize by remember { mutableIntStateOf(store.gatePoolSize) }
     var gateKeyMode by remember { mutableStateOf(store.gateKeyMode) }
+    var gateRelockMode by remember { mutableStateOf(store.gateRelockMode) }
     var minutes by remember { mutableIntStateOf(store.unlockMinutes) }
     var gateMode by remember { mutableStateOf(store.gateMode) }
 
@@ -222,7 +223,47 @@ private fun ColumnScope.GateSection(store: Store, onApps: () -> Unit, onTasks: (
         color = Color.White.copy(alpha = 0.72f),
     )
     Stepper("Richtige zum Öffnen", required, 1..20) { required = it; store.required = it }
-    Stepper("Minuten offen danach", minutes, 1..60) { minutes = it; store.unlockMinutes = it }
+    Text("Wieder sperren", fontSize = 14.sp)
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        GateRelockMode.entries.forEach { option ->
+            val selected = option == gateRelockMode
+            Button(
+                onClick = {
+                    gateRelockMode = option
+                    store.gateRelockMode = option
+                    // Clear stale unlocks when switching to stricter relock modes.
+                    if (option != GateRelockMode.TIMER) store.clearAllUnlocks()
+                },
+                shape = RoundedCornerShape(10.dp),
+                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+                    contentColor = if (selected) MaterialTheme.colorScheme.onPrimary else Color.White,
+                ),
+                modifier = Modifier.weight(1f).height(38.dp),
+            ) {
+                Text(
+                    option.label,
+                    fontSize = 13.sp,
+                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                    maxLines = 1,
+                    softWrap = false,
+                )
+            }
+        }
+    }
+    Text(
+        when (gateRelockMode) {
+            GateRelockMode.TIMER -> "Bleibt nach dem Lösen für $minutes Min. offen"
+            GateRelockMode.ON_SCREEN_OFF -> "Sperrt wieder, sobald du das Display ausschaltest"
+            GateRelockMode.ON_APP_LEAVE -> "Sperrt sofort wieder, sobald du die App verlässt oder das Display ausschaltest"
+        },
+        fontSize = 12.sp,
+        color = Color.White.copy(alpha = 0.72f),
+    )
+    if (gateRelockMode == GateRelockMode.TIMER) {
+        Stepper("Minuten offen danach", minutes, 1..60) { minutes = it; store.unlockMinutes = it }
+    }
 }
 
 @Composable
