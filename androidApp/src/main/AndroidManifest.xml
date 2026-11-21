@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!-- Allows GateService to reliably launch GateActivity over blocked apps on Android 10+ (BAL exemption). -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
     <!-- Needed to list the installed apps the user can put behind the gate. -->
     <queries>
         <intent>

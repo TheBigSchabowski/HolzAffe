@@ -342,4 +342,36 @@ class ChordsTest {
             prevId = q.progressionId
         }
     }
+
+    @Test
+    fun gateSessionDeckCapsPoolAtSevenAndVariesOrderWithoutBackToBackRepeats() {
+        for (mode in GameMode.entries) {
+            val deck = GateSessionDeck(mode = mode, rnd = Random(42 + mode.ordinal))
+            assertTrue(deck.pool.size in 1..GateSessionDeck.DEFAULT_POOL_SIZE, "mode=$mode pool=${deck.pool.size}")
+            val poolIds = deck.pool.map { it.id }.toSet()
+            assertEquals(deck.pool.size, poolIds.size, "mode=$mode pool must have distinct exercises")
+
+            val drawnIds = mutableListOf<String>()
+            var prevId: String? = null
+            repeat(35) { step ->
+                val q = deck.nextQuestion()
+                assertTrue(q.progressionId in poolIds, "mode=$mode step=$step drew outside 7-exercise pool")
+                assertNotEquals(prevId, q.progressionId, "mode=$mode step=$step repeated $prevId back-to-back")
+                drawnIds += q.progressionId
+                prevId = q.progressionId
+            }
+
+            // Consecutive full cycles of 7 must not stay in the exact same order.
+            val cycle1 = drawnIds.subList(0, deck.pool.size)
+            val cycle2 = drawnIds.subList(deck.pool.size, deck.pool.size * 2)
+            assertEquals(poolIds, cycle1.toSet())
+            assertEquals(poolIds, cycle2.toSet())
+            assertNotEquals(cycle1, cycle2, "mode=$mode cycles must reshuffle into a different order")
+        }
+
+        // Separate app launches (new decks) should pick different 7-exercise subsets.
+        val deckA = GateSessionDeck(GameMode.DEGREES, rnd = Random(1)).pool.map { it.id }.toSet()
+        val deckB = GateSessionDeck(GameMode.DEGREES, rnd = Random(2)).pool.map { it.id }.toSet()
+        assertNotEquals(deckA, deckB, "separate app-start sessions should pick different 7-exercise pools")
+    }
 }

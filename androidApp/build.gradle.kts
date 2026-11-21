@@ -19,7 +19,7 @@ android {
         applicationId = "com.example.holzaffe"
         minSdk = 27
         targetSdk = 36
-        versionCode = 4
+        versionCode = 5
         versionName = libs.versions.app.get()
     }
 

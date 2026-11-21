@@ -27,10 +27,18 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-/** Shown in front of a blocked app: N correct answers open it for a while. */
+/**
+ * Shown in front of a blocked app: N correct answers open it for a while.
+ *
+ * Each app-start session draws a fresh [GateSessionDeck] of at most 7 distinct exercises
+ * in randomized, non-repeating order so the user can recognize them by ear instead of
+ * guessing from the entire catalog or memorizing a fixed sequence.
+ */
 class GateActivity : ComponentActivity() {
     private var target by mutableStateOf("")
     private var solved by mutableIntStateOf(0)
+    // Incremented on each new gate launch so a fresh 7-exercise deck is created per app start.
+    private var sessionId by mutableIntStateOf(0)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -42,14 +50,23 @@ class GateActivity : ComponentActivity() {
         setContent {
             AppTheme {
                 Surface(Modifier.fillMaxSize()) {
-                    var paused by remember(target) { mutableStateOf(false) }
+                    var paused by remember(target, sessionId) { mutableStateOf(false) }
+                    val deck = remember(target, sessionId, mode) {
+                        GateSessionDeck(mode = mode, maxPoolSize = GateSessionDeck.DEFAULT_POOL_SIZE)
+                    }
+                    val nextGateQuestion = remember(deck) { { deck.nextQuestion() } }
                     BackHandler { goHome() }
                     Column(
                         Modifier.safeDrawingPadding().padding(24.dp).fillMaxSize(),
-                        verticalArrangement = Arrangement.spacedBy(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
                         Text("Erst hören, dann ${appLabel(target)}", fontSize = 22.sp)
+                        Text(
+                            "${deck.pool.size} Aufgaben · wechselnde Reihenfolge",
+                            fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
                         Text("$solved / $required", fontSize = 56.sp, color = MaterialTheme.colorScheme.primary)
                         LinearProgressIndicator(
                             progress = { solved.toFloat() / required },
@@ -63,6 +80,7 @@ class GateActivity : ComponentActivity() {
                             paused = paused,
                             onPausedChange = { paused = it },
                             isTimed = false,
+                            nextQuestion = nextGateQuestion,
                             onAnswer = { ok ->
                                 if (ok && ++solved >= required) {
                                     store.unlock(target)
@@ -83,6 +101,7 @@ class GateActivity : ComponentActivity() {
         if (pkg != target) {
             target = pkg
             solved = 0
+            sessionId++
         }
     }
 

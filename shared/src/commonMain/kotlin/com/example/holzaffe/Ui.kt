@@ -98,6 +98,9 @@ fun ModePicker(selected: GameMode, onSelect: (GameMode) -> Unit, modifier: Modif
 /**
  * Plays one exercise after the other and reports each answer. Shared by the
  * timed run and the Android app gate; [active] false freezes it.
+ *
+ * When [nextQuestion] is supplied (e.g. a per-launch [GateSessionDeck]), questions are drawn
+ * exclusively from that provider instead of the global [ReviewQueue].
  */
 @Composable
 fun QuizPanel(
@@ -109,11 +112,13 @@ fun QuizPanel(
     paused: Boolean = false,
     onPausedChange: (Boolean) -> Unit = {},
     isTimed: Boolean = false,
+    nextQuestion: (() -> Question)? = null,
 ) {
     val review = remember(scores) { ReviewQueue.decode(scores?.reviewQueue.orEmpty()) }
-    var question by remember(mode) { mutableStateOf(review.nextQuestion(mode)) }
-    var lastQuestion by remember(mode) { mutableStateOf<Question?>(null) }
-    var picked by remember(mode) { mutableStateOf<Int?>(null) }
+    val drawQuestion = { nextQuestion?.invoke() ?: review.nextQuestion(mode) }
+    var question by remember(mode, nextQuestion) { mutableStateOf(drawQuestion()) }
+    var lastQuestion by remember(mode, nextQuestion) { mutableStateOf<Question?>(null) }
+    var picked by remember(mode, nextQuestion) { mutableStateOf<Int?>(null) }
     var inspectPrevious by remember(paused) { mutableStateOf(false) }
 
     DisposableEffect(Unit) {
@@ -129,7 +134,7 @@ fun QuizPanel(
         delay(if (p == question.correct) 250 else 1100)
         lastQuestion = question
         picked = null
-        question = review.nextQuestion(mode)
+        question = drawQuestion()
     }
 
     if (paused) {
@@ -144,7 +149,7 @@ fun QuizPanel(
             onResume = {
                 lastQuestion = question
                 picked = null
-                question = review.nextQuestion(mode)
+                question = drawQuestion()
                 onPausedChange(false)
             },
             modifier = modifier,

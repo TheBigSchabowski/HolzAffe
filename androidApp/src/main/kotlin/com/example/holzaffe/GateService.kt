@@ -6,11 +6,8 @@ import android.view.accessibility.AccessibilityEvent
 
 /** Watches which app comes to the foreground and puts the challenge in front of blocked ones. */
 class GateService : AccessibilityService() {
-    private lateinit var store: Store
-
-    override fun onServiceConnected() {
-        store = Store(this)
-    }
+    // Lazy init avoids any race if an accessibility event arrives before onServiceConnected completes.
+    private val store by lazy { Store(this) }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
         if (event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return

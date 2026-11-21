@@ -3,12 +3,14 @@ package com.example.holzaffe
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -19,12 +21,18 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -33,6 +41,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -70,34 +79,119 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-/** The app-gate block at the bottom of the home screen. */
+/** The app-gate block at the bottom of the home screen, with One-Sec-style permission setup. */
 @Composable
 private fun ColumnScope.GateSection(store: Store, onApps: () -> Unit) {
     val context = LocalContext.current
+    var overlayOn by remember { mutableStateOf(Settings.canDrawOverlays(context)) }
     var gateOn by remember { mutableStateOf(gateEnabled(context)) }
     var required by remember { mutableIntStateOf(store.required) }
     var minutes by remember { mutableIntStateOf(store.unlockMinutes) }
     var gateMode by remember { mutableStateOf(store.gateMode) }
+
+    // Re-check both system permissions whenever the user returns from Android Settings.
     LifecycleResumeEffect(Unit) {
+        overlayOn = Settings.canDrawOverlays(context)
         gateOn = gateEnabled(context)
         onPauseOrDispose {}
     }
 
     HorizontalDivider(Modifier.padding(vertical = 4.dp))
     Text("App-Sperre", fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
-    if (gateOn) {
-        Text("Aktiv · ${store.blocked.size} App(s) gesperrt", color = Good)
+
+    if (overlayOn && gateOn) {
+        Text("Aktiv · ${store.blocked.size} App(s) gesperrt", color = Good, fontWeight = FontWeight.SemiBold)
     } else {
-        Text("Aus – Bedienungshilfe muss erlaubt werden", color = Bad)
-        Button(onClick = { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }) {
-            Text("Bedienungshilfe öffnen")
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(14.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        ) {
+            Column(
+                Modifier.fillMaxWidth().padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text("Berechtigungen einrichten", fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+
+                // Step 1: Display over other apps (SYSTEM_ALERT_WINDOW) — ensures GateActivity opens reliably.
+                PermissionRow(
+                    title = "1. Über anderen Apps einblenden",
+                    granted = overlayOn,
+                    actionLabel = "Erlauben",
+                    onAction = {
+                        context.startActivity(
+                            Intent(
+                                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                Uri.parse("package:${context.packageName}"),
+                            )
+                        )
+                    },
+                )
+
+                // Step 2: Accessibility service — detects when a blocked app comes to the foreground.
+                PermissionRow(
+                    title = "2. Bedienungshilfe aktivieren",
+                    granted = gateOn,
+                    actionLabel = "Öffnen",
+                    onAction = {
+                        context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                    },
+                )
+
+                if (!gateOn) {
+                    Text(
+                        "Falls ausgegraut (Android 13+): Erst App-Info öffnen → ⋮ oben rechts → „Eingeschränkte Einstellungen zulassen“.",
+                        fontSize = 12.sp,
+                        color = Color.White.copy(alpha = 0.75f),
+                    )
+                    OutlinedButton(
+                        onClick = {
+                            context.startActivity(
+                                Intent(
+                                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                    Uri.parse("package:${context.packageName}"),
+                                )
+                            )
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("App-Info öffnen")
+                    }
+                }
+            }
         }
     }
+
     OutlinedButton(onClick = onApps, modifier = Modifier.fillMaxWidth()) { Text("Gesperrte Apps wählen") }
-    Text("Modus der App-Sperre", fontSize = 14.sp)
+    Text("Modus der App-Sperre (max. ${GateSessionDeck.DEFAULT_POOL_SIZE} wechselnde Aufgaben)", fontSize = 13.sp)
     ModePicker(selected = gateMode, onSelect = { gateMode = it; store.gateMode = it })
     Stepper("Richtige zum Öffnen", required, 1..20) { required = it; store.required = it }
     Stepper("Minuten offen danach", minutes, 1..60) { minutes = it; store.unlockMinutes = it }
+}
+
+@Composable
+private fun PermissionRow(
+    title: String,
+    granted: Boolean,
+    actionLabel: String,
+    onAction: () -> Unit,
+) {
+    Row(
+        Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(
+            if (granted) "✓" else "✗",
+            color = if (granted) Good else Bad,
+            fontSize = 18.sp,
+            fontWeight = FontWeight.Bold,
+        )
+        Text(title, Modifier.weight(1f), fontSize = 14.sp)
+        if (!granted) {
+            Button(onClick = onAction) { Text(actionLabel, fontSize = 13.sp) }
+        }
+    }
 }
 
 private class AppEntry(val pkg: String, val label: String)
@@ -106,6 +200,7 @@ private class AppEntry(val pkg: String, val label: String)
 private fun ColumnScope.Apps(store: Store, onExit: () -> Unit) {
     val context = LocalContext.current
     var blocked by remember { mutableStateOf(store.blocked) }
+    var query by remember { mutableStateOf("") }
     val apps = remember {
         val pm = context.packageManager
         pm.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0)
@@ -114,10 +209,46 @@ private fun ColumnScope.Apps(store: Store, onExit: () -> Unit) {
             .distinctBy { it.pkg }
             .sortedWith(compareBy({ it.pkg !in store.blocked }, { it.label.lowercase() }))
     }
+    // Filter by app name or package name; prefix matches (e.g. "whats" -> "WhatsApp") rank first.
+    val filtered = remember(apps, query) {
+        val needle = query.trim().lowercase()
+        if (needle.isEmpty()) {
+            apps
+        } else {
+            apps.filter { it.label.lowercase().contains(needle) || it.pkg.lowercase().contains(needle) }
+                .sortedWith(
+                    compareBy(
+                        { !it.label.lowercase().startsWith(needle) },
+                        { it.label.lowercase() },
+                    )
+                )
+        }
+    }
 
     Text("Gesperrte Apps", fontSize = 26.sp, fontWeight = FontWeight.Bold)
+    OutlinedTextField(
+        value = query,
+        onValueChange = { query = it },
+        placeholder = { Text("App suchen (z. B. WhatsApp)…") },
+        singleLine = true,
+        trailingIcon = if (query.isNotEmpty()) {
+            { TextButton(onClick = { query = "" }) { Text("×", fontSize = 20.sp) } }
+        } else {
+            null
+        },
+        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+    )
     LazyColumn(Modifier.weight(1f)) {
-        items(apps, key = { it.pkg }) { app ->
+        if (filtered.isEmpty()) {
+            item {
+                Text(
+                    "Keine App gefunden",
+                    color = Color.White.copy(alpha = 0.65f),
+                    modifier = Modifier.padding(vertical = 16.dp),
+                )
+            }
+        }
+        items(filtered, key = { it.pkg }) { app ->
             val toggle = {
                 blocked = if (app.pkg in blocked) blocked - app.pkg else blocked + app.pkg
                 store.blocked = blocked

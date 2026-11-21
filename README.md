@@ -25,11 +25,14 @@ ein paar Aufgaben richtig erkannt hast.
 
 ## App-Sperre (nur Android)
 
-Öffnest du eine gesperrte App, erscheint davor die Challenge im gewählten Sperr-Modus. Nach 5 richtigen Antworten (einstellbar)
-geht die App auf und bleibt 10 Minuten (einstellbar) frei. Dafür braucht HolzAffe die Bedienungshilfe
-„HolzAffe App-Sperre“; sie erkennt nur, welche App in den Vordergrund kommt, und liest keine
-Bildschirminhalte. Bei einer von Hand installierten APK muss vorher in der App-Info
-„Eingeschränkte Einstellungen zulassen“ gewählt werden.
+Öffnest du eine gesperrte App, erscheint davor die Challenge im gewählten Sperr-Modus. Pro App-Start
+zieht HolzAffe maximal **7 unterschiedliche Aufgaben**, die sich in ständig wechselnder Reihenfolge
+wiederholen – so lassen sich die Akkorde nach Gehör und Erinnerung lösen, ohne dass man eine feste
+Reihenfolge auswendig lernen kann. Nach 5 richtigen Antworten (einstellbar) geht die App auf und
+bleibt 10 Minuten (einstellbar) frei. In der App-Auswahl hilft eine Suchleiste (z. B. `whats` für
+WhatsApp), und die nötigen Berechtigungen (**Über anderen Apps einblenden** + **Bedienungshilfe**,
+inkl. Direkt-Link zur App-Info für Android 13+ „Eingeschränkte Einstellungen“) lassen sich direkt
+in HolzAffe einrichten. Es werden keine Bildschirminhalte gelesen.
 
 ## Installieren
 

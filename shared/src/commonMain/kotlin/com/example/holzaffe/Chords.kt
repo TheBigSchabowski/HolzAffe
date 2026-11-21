@@ -479,6 +479,78 @@ class ReviewQueue(initial: List<Entry> = emptyList()) {
     }
 }
 
+/**
+ * Per-app-launch deck for the Android app gate.
+ *
+ * Picks a fresh subset of at most [maxPoolSize] (default 7) distinct exercises for a single
+ * unlock session so the user can recognize and learn them by ear/memory rather than guessing
+ * from the full catalog. Exercises repeat in freshly reshuffled bags whose order changes on
+ * every cycle and never repeats the same exercise back-to-back, preventing position memorization.
+ */
+class GateSessionDeck(
+    val mode: GameMode,
+    maxPoolSize: Int = DEFAULT_POOL_SIZE,
+    private val rnd: Random = Random,
+) {
+    /** Fixed subset of distinct exercises active for this single app-start challenge. */
+    val pool: List<Exercise>
+
+    private val bag = ArrayDeque<Exercise>()
+    private var lastId: String? = null
+    private var lastCycleOrder: List<String> = emptyList()
+
+    init {
+        require(maxPoolSize >= 1) { "maxPoolSize must be >= 1, was $maxPoolSize" }
+        val source = if (mode == GameMode.MIX) ALL_EXERCISES else EXERCISES_BY_MODE.getValue(mode)
+        pool = source.shuffled(rnd).take(maxPoolSize.coerceAtMost(source.size))
+    }
+
+    /** Returns the next question drawn exclusively from [pool] in a non-repeating shuffled order. */
+    fun nextQuestion(): Question {
+        if (bag.isEmpty()) refillBag()
+        val exercise = bag.removeFirst()
+        lastId = exercise.id
+        return QuestionFactory.forExercise(exercise, rnd)
+    }
+
+    /**
+     * Refills [bag] with a new permutation of [pool] that:
+     * 1. does not start with [lastId] (no back-to-back repeat across bag boundaries), and
+     * 2. differs from [lastCycleOrder] whenever pool.size >= 3 (so the sequence cannot be memorized).
+     */
+    private fun refillBag() {
+        if (pool.size == 1) {
+            bag.addLast(pool.first())
+            return
+        }
+        var candidate = pool.shuffled(rnd)
+        var attempts = 0
+        while (attempts < MAX_SHUFFLE_ATTEMPTS) {
+            val repeatsBoundary = candidate.first().id == lastId
+            val sameCycle = pool.size >= 3 && lastCycleOrder.isNotEmpty() && candidate.map { it.id } == lastCycleOrder
+            if (!repeatsBoundary && !sameCycle) break
+            candidate = pool.shuffled(rnd)
+            attempts++
+        }
+        // Deterministic fallback if random shuffles still collided at the boundary.
+        if (candidate.first().id == lastId) {
+            val mutable = candidate.toMutableList()
+            val swapIdx = mutable.indexOfFirst { it.id != lastId }.coerceAtLeast(1)
+            val tmp = mutable[0]
+            mutable[0] = mutable[swapIdx]
+            mutable[swapIdx] = tmp
+            candidate = mutable
+        }
+        lastCycleOrder = candidate.map { it.id }
+        candidate.forEach { bag.addLast(it) }
+    }
+
+    companion object {
+        const val DEFAULT_POOL_SIZE = 7
+        private const val MAX_SHUFFLE_ATTEMPTS = 16
+    }
+}
+
 /** Renders chords to 16-bit mono PCM with a small piano-like additive synth. */
 object Synth {
     const val RATE = 44100
