@@ -94,22 +94,28 @@ class GateService : AccessibilityService() {
         // Ignore transient system overlays & soft keyboards so typing doesn't count as leaving the app.
         if (isTransientSystemPackage(pkg)) return
 
-        // If a timed redirect to a practice app is active, bounce early attempts on the blocked app back to practice.
+        // If a timed redirect to a practice app is active:
+        // - Allow the practice app itself (even if it is also in the blocked list)
+        // - Bounce early attempts on the blocked app back to the practice app.
         val redirect = activeRedirect
-        if (redirect != null && pkg == redirect.blockedPkg) {
-            if (redirect.practicePkg.isNotEmpty()) {
-                packageManager.getLaunchIntentForPackage(redirect.practicePkg)?.let {
-                    it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    startActivity(it)
+        if (redirect != null) {
+            if (pkg == redirect.practicePkg) return
+            if (pkg == redirect.blockedPkg) {
+                if (redirect.practicePkg.isNotEmpty()) {
+                    packageManager.getLaunchIntentForPackage(redirect.practicePkg)?.let {
+                        it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        startActivity(it)
+                    }
                 }
+                return
             }
-            return
         }
 
-        // In ON_APP_LEAVE mode, switching to any other app (including Home) immediately revokes the unlock.
+        // In ON_APP_LEAVE mode, switching to any other app (including Home) revokes the unlock
+        // once the brief post-unlock transition grace window has passed.
         val prev = activeUnlockedPkg
         if (prev != null && pkg != prev) {
-            if (store.gateRelockMode == GateRelockMode.ON_APP_LEAVE) {
+            if (store.gateRelockMode == GateRelockMode.ON_APP_LEAVE && !store.wasRecentlyUnlocked(prev)) {
                 store.relock(prev)
             }
             activeUnlockedPkg = null
@@ -120,6 +126,9 @@ class GateService : AccessibilityService() {
             activeUnlockedPkg = pkg
             return
         }
+
+        // Avoid firing duplicate GateActivity launches for rapid window transitions while already showing.
+        if (GateActivity.activeTargetPkg == pkg) return
 
         startActivity(
             Intent(this, GateActivity::class.java)

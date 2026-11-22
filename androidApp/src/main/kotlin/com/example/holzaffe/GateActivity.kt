@@ -6,9 +6,11 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
+import android.util.SizeF
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.FrameLayout
@@ -44,6 +46,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -51,6 +54,19 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import kotlin.time.TimeSource
 import kotlinx.coroutines.delay
+
+/**
+ * Sends an explicit APPWIDGET_UPDATE broadcast to the bound widget's provider so it renders
+ * fresh RemoteViews immediately after binding, configuration, or gate appearance.
+ */
+internal fun requestWidgetUpdate(context: Context, widgetId: Int) {
+    if (widgetId == AppWidgetManager.INVALID_APPWIDGET_ID) return
+    val info = AppWidgetManager.getInstance(context).getAppWidgetInfo(widgetId) ?: return
+    val updateIntent = Intent(AppWidgetManager.ACTION_APPWIDGET_UPDATE)
+        .setComponent(info.provider)
+        .putExtra(AppWidgetManager.EXTRA_APPWIDGET_IDS, intArrayOf(widgetId))
+    runCatching { context.sendBroadcast(updateIntent) }
+}
 
 /**
  * Shown in front of a blocked app: switches between the active entries in the user's gate pool
@@ -71,7 +87,9 @@ class GateActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         widgetHost = AppWidgetHost(applicationContext, WIDGET_HOST_ID)
+        runCatching { widgetHost.startListening() }
         target = intent.getStringExtra(EXTRA_PACKAGE).orEmpty()
+        activeTargetPkg = target
         val store = Store(this)
         val required = store.required
         val mode = store.gateMode
@@ -227,23 +245,23 @@ class GateActivity : ComponentActivity() {
         runCatching { widgetHost.startListening() }
     }
 
+    override fun onResume() {
+        super.onResume()
+        activeTargetPkg = target
+    }
+
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
         // If the user tapped the embedded widget (opening e.g. Widder), hand the remaining timer to GateService.
-        val handoff = pendingWidgetHandoff ?: return
-        val (task, remainingProvider) = handoff
-        val remainingMs = remainingProvider()
-        if (remainingMs > 0L) {
-            GateService.startRedirect(target, task.targetPackage, remainingMs)
-        }
-        pendingWidgetHandoff = null
+        performWidgetHandoffIfNeeded()
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         val pkg = intent.getStringExtra(EXTRA_PACKAGE).orEmpty()
-        if (pkg != target) {
+        if (pkg.isNotEmpty()) {
             target = pkg
+            activeTargetPkg = pkg
             solved = 0
             sessionId++
         }
@@ -251,10 +269,34 @@ class GateActivity : ComponentActivity() {
 
     override fun onStop() {
         super.onStop()
+        if (activeTargetPkg == target) activeTargetPkg = null
+        // RemoteViews PendingIntents sent via the system server do not always invoke onUserLeaveHint(),
+        // so also perform the handoff here when leaving interactively without finishing or rotating.
+        val interactive = (getSystemService(Context.POWER_SERVICE) as? PowerManager)?.isInteractive ?: true
+        if (!isChangingConfigurations && !isFinishing && interactive) {
+            performWidgetHandoffIfNeeded()
+        } else {
+            pendingWidgetHandoff = null
+        }
         runCatching { widgetHost.stopListening() }
         ChordPlayer.stop()
         // Leaving mid-challenge forfeits the progress (unless a widget handoff already passed the timer to GateService).
         if (!isChangingConfigurations) finish()
+    }
+
+    override fun onDestroy() {
+        if (activeTargetPkg == target) activeTargetPkg = null
+        super.onDestroy()
+    }
+
+    private fun performWidgetHandoffIfNeeded() {
+        val handoff = pendingWidgetHandoff ?: return
+        val (task, remainingProvider) = handoff
+        val remainingMs = remainingProvider()
+        pendingWidgetHandoff = null
+        if (remainingMs > 0L) {
+            GateService.startRedirect(target, task.targetPackage, remainingMs)
+        }
     }
 
     private fun unlockAndOpen(store: Store, pkg: String) {
@@ -281,6 +323,7 @@ class GateActivity : ComponentActivity() {
     }.getOrDefault(pkg)
 
     private fun open(pkg: String) {
+        if (activeTargetPkg == target) activeTargetPkg = null
         packageManager.getLaunchIntentForPackage(pkg)?.let { startActivity(it) }
         finish()
     }
@@ -288,6 +331,7 @@ class GateActivity : ComponentActivity() {
     /** Back must not fall through to the blocked app underneath. */
     private fun goHome() {
         pendingWidgetHandoff = null
+        if (activeTargetPkg == target) activeTargetPkg = null
         startActivity(
             Intent(Intent.ACTION_MAIN)
                 .addCategory(Intent.CATEGORY_HOME)
@@ -299,6 +343,10 @@ class GateActivity : ComponentActivity() {
     companion object {
         const val EXTRA_PACKAGE = "package"
         const val WIDGET_HOST_ID = 0x484F4C5A
+
+        @Volatile
+        var activeTargetPkg: String? = null
+            private set
     }
 }
 
@@ -317,6 +365,14 @@ private fun WidgetTaskGate(
     onComplete: () -> Unit,
     onCancel: () -> Unit,
 ) {
+    val context = LocalContext.current
+    val widgetInfo = remember(task.widgetId) {
+        if (task.widgetId != AppWidgetManager.INVALID_APPWIDGET_ID) {
+            AppWidgetManager.getInstance(context).getAppWidgetInfo(task.widgetId)
+        } else {
+            null
+        }
+    }
     val totalMs = task.minutes * 60_000L
     var remainingMs by remember(task.id) { mutableLongStateOf(totalMs) }
 
@@ -355,30 +411,43 @@ private fun WidgetTaskGate(
             textAlign = TextAlign.Center,
         )
         Card(
-            modifier = Modifier.fillMaxWidth().heightIn(min = 140.dp, max = 320.dp),
+            modifier = Modifier.fillMaxWidth().heightIn(min = 200.dp, max = 340.dp),
             shape = RoundedCornerShape(16.dp),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
         ) {
-            AndroidView(
-                modifier = Modifier.fillMaxWidth().padding(12.dp),
-                factory = { ctx ->
-                    val container = FrameLayout(ctx)
-                    val mgr = AppWidgetManager.getInstance(ctx)
-                    val info = mgr.getAppWidgetInfo(task.widgetId)
-                    if (info != null) {
-                        val hostView = widgetHost.createView(ctx.applicationContext, task.widgetId, info)
-                        hostView.setAppWidget(task.widgetId, info)
+            if (widgetInfo != null) {
+                AndroidView(
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 180.dp, max = 316.dp).padding(12.dp),
+                    factory = { ctx ->
+                        val container = FrameLayout(ctx)
+                        requestWidgetUpdate(ctx, task.widgetId)
+                        // Use Activity context (ctx) so widget PendingIntents & theme attributes work cleanly.
+                        val hostView = widgetHost.createView(ctx, task.widgetId, widgetInfo)
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                            hostView.updateAppWidgetSize(Bundle(), listOf(SizeF(320f, 220f)))
+                        } else {
+                            @Suppress("DEPRECATION")
+                            hostView.updateAppWidgetSize(Bundle(), 320, 180, 380, 300)
+                        }
                         container.addView(
                             hostView,
                             FrameLayout.LayoutParams(
                                 ViewGroup.LayoutParams.MATCH_PARENT,
-                                ViewGroup.LayoutParams.WRAP_CONTENT,
+                                ViewGroup.LayoutParams.MATCH_PARENT,
                             ),
                         )
-                    }
-                    container
-                },
-            )
+                        container
+                    },
+                )
+            } else {
+                Text(
+                    "Widget nicht mehr verfügbar – bitte unter Sperr-Aufgaben neu verknüpfen.",
+                    fontSize = 14.sp,
+                    color = Bad,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(20.dp),
+                )
+            }
         }
         if (task.targetPackage.isNotEmpty()) {
             Button(

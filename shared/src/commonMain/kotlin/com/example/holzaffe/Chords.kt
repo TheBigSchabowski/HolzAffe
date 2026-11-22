@@ -733,6 +733,97 @@ object GateChallengePicker {
     }
 }
 
+/**
+ * Search and ranking helper for Android app and widget pickers.
+ * Matches exclusively against user-visible labels (never raw package names like `com.android.*`),
+ * supports German umlaut folding (`ä`/`ae`, `ö`/`oe`, `ü`/`ue`, `ß`/`ss`), and ranks
+ * exact and prefix matches before mid-word or secondary matches.
+ */
+object AppSearch {
+    private val WORD_DELIMITERS = charArrayOf(' ', '\t', '\n', '·', '-', '_', '/', '(', ')')
+
+    /** Lowercases [s] and folds German umlauts and sharp-s to ASCII digraphs for forgiving search. */
+    fun foldUmlauts(s: String): String = buildString(s.length) {
+        for (ch in s.lowercase()) {
+            when (ch) {
+                'ä' -> append("ae")
+                'ö' -> append("oe")
+                'ü' -> append("ue")
+                'ß' -> append("ss")
+                else -> append(ch)
+            }
+        }
+    }
+
+    /**
+     * Filters [items] by [query] against [labelOf] and optional [secondaryOf],
+     * returning matching items ranked by match quality. When [query] is blank,
+     * [items] is returned unchanged in its original order.
+     */
+    fun <T> filterAndRank(
+        items: List<T>,
+        query: String,
+        labelOf: (T) -> String,
+        secondaryOf: (T) -> String = { "" },
+    ): List<T> {
+        val trimmed = query.trim()
+        if (trimmed.isEmpty()) return items
+        val qExact = trimmed.lowercase()
+        val qFolded = foldUmlauts(trimmed)
+
+        data class Ranked(
+            val item: T,
+            val tier: Int,
+            val matchIndex: Int,
+            val primaryLower: String,
+            val secondaryLower: String,
+        )
+
+        val matched = ArrayList<Ranked>(items.size)
+        for (item in items) {
+            val primary = labelOf(item)
+            val secondary = secondaryOf(item)
+            val pExact = primary.lowercase()
+            val pFolded = foldUmlauts(primary)
+            val sExact = secondary.lowercase()
+            val sFolded = foldUmlauts(secondary)
+
+            val inPrimary = qExact in pExact || qFolded in pFolded
+            val inSecondary = secondary.isNotEmpty() && (qExact in sExact || qFolded in sFolded)
+            if (!inPrimary && !inSecondary) continue
+
+            val tier = when {
+                pExact == qExact || pFolded == qFolded -> 0
+                pExact.startsWith(qExact) || pFolded.startsWith(qFolded) -> 1
+                hasWordPrefix(pExact, qExact) || hasWordPrefix(pFolded, qFolded) -> 2
+                secondary.isNotEmpty() && (sExact.startsWith(qExact) || sFolded.startsWith(qFolded)) -> 3
+                else -> 4
+            }
+            val exactIdx = pExact.indexOf(qExact)
+            val foldedIdx = pFolded.indexOf(qFolded)
+            val matchIndex = when {
+                exactIdx >= 0 -> exactIdx
+                foldedIdx >= 0 -> foldedIdx
+                else -> Int.MAX_VALUE
+            }
+            matched.add(Ranked(item, tier, matchIndex, pExact, sExact))
+        }
+
+        matched.sortWith(
+            compareBy<Ranked>(
+                { it.tier },
+                { it.matchIndex },
+                { it.primaryLower },
+                { it.secondaryLower },
+            )
+        )
+        return matched.map { it.item }
+    }
+
+    private fun hasWordPrefix(text: String, query: String): Boolean =
+        text.split(*WORD_DELIMITERS).any { word -> word.isNotEmpty() && word.startsWith(query) }
+}
+
 /** Renders chords to 16-bit mono PCM with a small piano-like additive synth. */
 object Synth {
     const val RATE = 44100

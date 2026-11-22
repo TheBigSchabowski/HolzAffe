@@ -7,11 +7,17 @@
     <!-- Short haptic confirmation when a timed task or chord gate unlocks the target app. -->
     <uses-permission android:name="android.permission.VIBRATE" />
 
-    <!-- Needed to list the installed apps the user can put behind the gate. -->
+    <!-- Needed to list installed apps and AppWidgets the user can use behind the gate. -->
     <queries>
         <intent>
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+        <intent>
+            <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+        </intent>
+        <intent>
+            <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" />
         </intent>
     </queries>
 

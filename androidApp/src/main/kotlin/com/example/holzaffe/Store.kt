@@ -105,20 +105,32 @@ class Store(context: Context) : Scores {
         set(v) = prefs.edit().putInt("unlockMinutes", v).apply()
 
     fun unlock(pkg: String) {
+        val now = System.currentTimeMillis()
         val until = when (gateRelockMode) {
-            GateRelockMode.TIMER -> System.currentTimeMillis() + unlockMinutes * 60_000L
+            GateRelockMode.TIMER -> now + unlockMinutes * 60_000L
             GateRelockMode.ON_SCREEN_OFF, GateRelockMode.ON_APP_LEAVE -> Long.MAX_VALUE
         }
-        prefs.edit().putLong("unlock:$pkg", until).apply()
+        prefs.edit()
+            .putLong("unlock:$pkg", until)
+            .putLong("unlockedAt:$pkg", now)
+            .apply()
+    }
+
+    /** True shortly after [unlock] so closing gate/practice window transitions do not relock prematurely. */
+    fun wasRecentlyUnlocked(pkg: String, graceMs: Long = 2_000L): Boolean {
+        val unlockedAt = prefs.getLong("unlockedAt:$pkg", 0L)
+        return unlockedAt > 0L && (System.currentTimeMillis() - unlockedAt) < graceMs
     }
 
     fun relock(pkg: String) {
-        prefs.edit().remove("unlock:$pkg").apply()
+        prefs.edit().remove("unlock:$pkg").remove("unlockedAt:$pkg").apply()
     }
 
     fun clearAllUnlocks() {
         val editor = prefs.edit()
-        prefs.all.keys.filter { it.startsWith("unlock:") }.forEach { editor.remove(it) }
+        prefs.all.keys
+            .filter { it.startsWith("unlock:") || it.startsWith("unlockedAt:") }
+            .forEach { editor.remove(it) }
         editor.apply()
     }
 

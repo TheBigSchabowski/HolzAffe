@@ -1,11 +1,14 @@
 package com.example.holzaffe
 
+import android.app.ActivityOptions
 import android.appwidget.AppWidgetHost
 import android.appwidget.AppWidgetManager
+import android.appwidget.AppWidgetProviderInfo
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
@@ -19,6 +22,7 @@ import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -26,6 +30,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -40,6 +45,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -50,49 +56,50 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 
-private enum class MainScreen { HOME, APPS, TASKS, PICK_REDIRECT_APP }
+private enum class MainScreen { HOME, APPS, TASKS, PICK_REDIRECT_APP, PICK_WIDGET }
 
 class MainActivity : ComponentActivity() {
     private lateinit var store: Store
     private lateinit var widgetHost: AppWidgetHost
 
-    // Pending widget metadata while Android's system widget picker / configurator runs.
+    private var screen by mutableStateOf(MainScreen.HOME)
+    private var widgetMinutes by mutableIntStateOf(1)
+    private var widgetCustomLabel by mutableStateOf("")
+    private var widgetError by mutableStateOf<String?>(null)
+
+    // Pending widget metadata while Android's bind permission / widget configurator runs.
     private var pendingWidgetId: Int = AppWidgetManager.INVALID_APPWIDGET_ID
     private var pendingWidgetMinutes: Int = 1
     private var pendingWidgetCustomLabel: String = ""
-    // Bumped whenever a widget task is added from an ActivityResult so Compose reloads Store.
+    private var pendingWidgetReconfigure: Boolean = false
+    // Bumped whenever a widget task is added/reconfigured so Compose reloads Store.
     private var tasksRevision by mutableIntStateOf(0)
 
-    private val pickWidgetLauncher = registerForActivityResult(
+    private val bindWidgetLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
         val id = result.data?.getIntExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, pendingWidgetId) ?: pendingWidgetId
-        if (result.resultCode != RESULT_OK || id == AppWidgetManager.INVALID_APPWIDGET_ID) {
-            if (id != AppWidgetManager.INVALID_APPWIDGET_ID) widgetHost.deleteAppWidgetId(id)
-            pendingWidgetId = AppWidgetManager.INVALID_APPWIDGET_ID
-            return@registerForActivityResult
-        }
-        val info = AppWidgetManager.getInstance(this).getAppWidgetInfo(id)
-        if (info == null) {
-            widgetHost.deleteAppWidgetId(id)
-            pendingWidgetId = AppWidgetManager.INVALID_APPWIDGET_ID
-            return@registerForActivityResult
-        }
-        if (info.configure != null) {
-            // Launch the widget's own configuration screen (e.g. choosing a specific Widder section).
-            pendingWidgetId = id
-            runCatching {
-                widgetHost.startAppWidgetConfigureActivityForResult(this, id, 0, REQ_CONFIGURE_WIDGET, null)
-            }.onFailure {
-                saveBoundWidgetTask(id)
-            }
+        if (result.resultCode == RESULT_OK && id != AppWidgetManager.INVALID_APPWIDGET_ID) {
+            proceedAfterWidgetBound(id)
         } else {
-            saveBoundWidgetTask(id)
+            if (id != AppWidgetManager.INVALID_APPWIDGET_ID) {
+                runCatching { widgetHost.deleteAppWidgetId(id) }
+            }
+            pendingWidgetId = AppWidgetManager.INVALID_APPWIDGET_ID
+            pendingWidgetReconfigure = false
+            widgetError = "Widget-Berechtigung wurde nicht erteilt."
         }
+    }
+
+    private val configureWidgetLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        handleWidgetConfigResult(result.resultCode, result.data)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -102,11 +109,14 @@ class MainActivity : ComponentActivity() {
         setContent {
             AppTheme {
                 Surface(Modifier.fillMaxSize()) {
-                    var screen by remember { mutableStateOf(MainScreen.HOME) }
                     var redirectMinutes by remember { mutableIntStateOf(1) }
                     val control = remember { RunControl() }
                     BackHandler(enabled = screen != MainScreen.HOME || control.running) {
-                        screen = if (screen == MainScreen.PICK_REDIRECT_APP) MainScreen.TASKS else MainScreen.HOME
+                        screen = when (screen) {
+                            MainScreen.PICK_REDIRECT_APP, MainScreen.PICK_WIDGET -> MainScreen.TASKS
+                            else -> MainScreen.HOME
+                        }
+                        widgetError = null
                         control.running = false
                     }
                     Column(Modifier.safeDrawingPadding().padding(24.dp).fillMaxSize()) {
@@ -123,10 +133,23 @@ class MainActivity : ComponentActivity() {
                                         targetPackage = entry.pkg,
                                     )
                                     store.gateTasks = store.gateTasks + created
+                                    store.gateActiveTaskIds = store.gateActiveTaskIds + created.id
                                     tasksRevision++
                                     screen = MainScreen.TASKS
                                 },
                                 onCancel = { screen = MainScreen.TASKS },
+                            )
+                            MainScreen.PICK_WIDGET -> WidgetPicker(
+                                minutes = widgetMinutes,
+                                errorMessage = widgetError,
+                                onPick = { entry ->
+                                    widgetError = null
+                                    onSelectWidgetProvider(entry.info, widgetMinutes, widgetCustomLabel)
+                                },
+                                onCancel = {
+                                    widgetError = null
+                                    screen = MainScreen.TASKS
+                                },
                             )
                             MainScreen.TASKS -> GateTasksScreen(
                                 store = store,
@@ -136,7 +159,13 @@ class MainActivity : ComponentActivity() {
                                     screen = MainScreen.PICK_REDIRECT_APP
                                 },
                                 onPickWidget = { mins, customLabel ->
-                                    launchWidgetPicker(mins, customLabel)
+                                    widgetMinutes = mins
+                                    widgetCustomLabel = customLabel.trim()
+                                    widgetError = null
+                                    screen = MainScreen.PICK_WIDGET
+                                },
+                                onConfigureWidget = { task ->
+                                    reconfigureWidgetTask(task)
                                 },
                                 onDeleteWidget = { widgetId ->
                                     if (widgetId != AppWidgetManager.INVALID_APPWIDGET_ID) {
@@ -159,28 +188,120 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        runCatching { widgetHost.startListening() }
+    }
+
     @Deprecated("Required for AppWidgetHost.startAppWidgetConfigureActivityForResult")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == REQ_CONFIGURE_WIDGET) {
-            val id = data?.getIntExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, pendingWidgetId) ?: pendingWidgetId
-            if (resultCode == RESULT_OK && id != AppWidgetManager.INVALID_APPWIDGET_ID) {
-                saveBoundWidgetTask(id)
-            } else if (id != AppWidgetManager.INVALID_APPWIDGET_ID) {
-                widgetHost.deleteAppWidgetId(id)
-                pendingWidgetId = AppWidgetManager.INVALID_APPWIDGET_ID
-            }
+            handleWidgetConfigResult(resultCode, data)
         }
     }
 
-    private fun launchWidgetPicker(minutes: Int, customLabel: String) {
+    /** Allocates a host ID, binds the chosen widget (prompting Android's bind consent if needed), and configures it. */
+    private fun onSelectWidgetProvider(info: AppWidgetProviderInfo, minutes: Int, customLabel: String) {
         val id = widgetHost.allocateAppWidgetId()
         pendingWidgetId = id
         pendingWidgetMinutes = minutes
         pendingWidgetCustomLabel = customLabel.trim()
-        val intent = Intent(AppWidgetManager.ACTION_APPWIDGET_PICK)
-            .putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, id)
-        pickWidgetLauncher.launch(intent)
+        pendingWidgetReconfigure = false
+
+        val mgr = AppWidgetManager.getInstance(this)
+        val bound = runCatching { mgr.bindAppWidgetIdIfAllowed(id, info.provider) }.getOrDefault(false)
+        if (bound) {
+            proceedAfterWidgetBound(id)
+        } else {
+            val bindIntent = Intent(AppWidgetManager.ACTION_APPWIDGET_BIND)
+                .putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, id)
+                .putExtra(AppWidgetManager.EXTRA_APPWIDGET_PROVIDER, info.provider)
+            runCatching {
+                bindWidgetLauncher.launch(bindIntent)
+            }.onFailure {
+                runCatching { widgetHost.deleteAppWidgetId(id) }
+                pendingWidgetId = AppWidgetManager.INVALID_APPWIDGET_ID
+                widgetError = "Widget konnte auf diesem Gerät nicht gebunden werden."
+            }
+        }
+    }
+
+    private fun proceedAfterWidgetBound(widgetId: Int) {
+        val info = AppWidgetManager.getInstance(this).getAppWidgetInfo(widgetId)
+        if (info == null) {
+            runCatching { widgetHost.deleteAppWidgetId(widgetId) }
+            pendingWidgetId = AppWidgetManager.INVALID_APPWIDGET_ID
+            pendingWidgetReconfigure = false
+            widgetError = "Widget-Informationen konnten nicht geladen werden."
+            return
+        }
+        if (info.configure != null) {
+            launchWidgetConfiguration(widgetId, info, isReconfigure = false)
+        } else {
+            saveBoundWidgetTask(widgetId)
+        }
+    }
+
+    private fun reconfigureWidgetTask(task: GateTask) {
+        if (task.widgetId == AppWidgetManager.INVALID_APPWIDGET_ID) return
+        val info = AppWidgetManager.getInstance(this).getAppWidgetInfo(task.widgetId) ?: return
+        if (info.configure != null) {
+            launchWidgetConfiguration(task.widgetId, info, isReconfigure = true)
+        }
+    }
+
+    private fun launchWidgetConfiguration(widgetId: Int, info: AppWidgetProviderInfo, isReconfigure: Boolean) {
+        pendingWidgetId = widgetId
+        pendingWidgetReconfigure = isReconfigure
+        // On Android 14+ (API 34+), AppWidgetHost needs explicit BAL opt-in to start another app's config Activity.
+        val options = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            ActivityOptions.makeBasic()
+                .setPendingIntentBackgroundActivityStartMode(ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED)
+                .toBundle()
+        } else {
+            null
+        }
+        val launchedViaHost = runCatching {
+            widgetHost.startAppWidgetConfigureActivityForResult(this, widgetId, 0, REQ_CONFIGURE_WIDGET, options)
+        }.isSuccess
+        if (!launchedViaHost) {
+            val fallbackLaunched = runCatching {
+                val configIntent = Intent(AppWidgetManager.ACTION_APPWIDGET_CONFIGURE)
+                    .setComponent(info.configure)
+                    .putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, widgetId)
+                configureWidgetLauncher.launch(configIntent)
+            }.isSuccess
+            if (!fallbackLaunched) {
+                if (!isReconfigure) {
+                    saveBoundWidgetTask(widgetId)
+                } else {
+                    pendingWidgetId = AppWidgetManager.INVALID_APPWIDGET_ID
+                    pendingWidgetReconfigure = false
+                }
+            }
+        }
+    }
+
+    private fun handleWidgetConfigResult(resultCode: Int, data: Intent?) {
+        val id = data?.getIntExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, pendingWidgetId) ?: pendingWidgetId
+        val isReconfig = pendingWidgetReconfigure
+        if (id != AppWidgetManager.INVALID_APPWIDGET_ID) {
+            requestWidgetUpdate(this, id)
+        }
+        if (isReconfig) {
+            pendingWidgetId = AppWidgetManager.INVALID_APPWIDGET_ID
+            pendingWidgetReconfigure = false
+            tasksRevision++
+            return
+        }
+        if (resultCode == RESULT_OK && id != AppWidgetManager.INVALID_APPWIDGET_ID) {
+            saveBoundWidgetTask(id)
+        } else if (id != AppWidgetManager.INVALID_APPWIDGET_ID) {
+            runCatching { widgetHost.deleteAppWidgetId(id) }
+            pendingWidgetId = AppWidgetManager.INVALID_APPWIDGET_ID
+            pendingWidgetReconfigure = false
+        }
     }
 
     private fun saveBoundWidgetTask(widgetId: Int) {
@@ -200,18 +321,25 @@ class MainActivity : ComponentActivity() {
         val created = GateTask(
             id = "w_${System.currentTimeMillis()}_$widgetId",
             text = label,
-            minutes = pendingWidgetMinutes,
+            minutes = pendingWidgetMinutes.coerceIn(GateTask.MIN_MINUTES, GateTask.MAX_MINUTES),
             kind = GateTaskKind.WIDGET,
             targetPackage = pkg,
             widgetId = widgetId,
         )
+        requestWidgetUpdate(this, widgetId)
         store.gateTasks = store.gateTasks + created
+        store.gateActiveTaskIds = store.gateActiveTaskIds + created.id
         pendingWidgetId = AppWidgetManager.INVALID_APPWIDGET_ID
+        pendingWidgetCustomLabel = ""
+        pendingWidgetReconfigure = false
+        widgetError = null
         tasksRevision++
+        screen = MainScreen.TASKS
     }
 
     override fun onStop() {
         super.onStop()
+        runCatching { widgetHost.stopListening() }
         ChordPlayer.stop()
     }
 
@@ -423,34 +551,52 @@ private fun PermissionRow(
 
 private class AppEntry(val pkg: String, val label: String)
 
+private class WidgetProviderEntry(
+    val info: AppWidgetProviderInfo,
+    val key: String,
+    val appName: String,
+    val widgetLabel: String,
+    val configurable: Boolean,
+)
+
+/**
+ * Loads launchable apps installed on the device and disambiguates duplicate display names
+ * (e.g. multiple Anki variants) using the last package segment so search results stay clear.
+ */
+private fun loadInstalledLauncherApps(context: Context): List<AppEntry> {
+    val pm = context.packageManager
+    val raw = pm.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0)
+        .map {
+            val label = it.loadLabel(pm).toString().trim().ifEmpty { it.activityInfo.packageName }
+            AppEntry(it.activityInfo.packageName, label)
+        }
+        .filter { it.pkg != context.packageName }
+        .distinctBy { it.pkg }
+    val labelCounts = raw.groupingBy { it.label.lowercase() }.eachCount()
+    return raw.map { entry ->
+        if ((labelCounts[entry.label.lowercase()] ?: 0) > 1) {
+            AppEntry(entry.pkg, "${entry.label} (${entry.pkg.substringAfterLast('.')})")
+        } else {
+            entry
+        }
+    }
+}
+
 @Composable
 private fun ColumnScope.Apps(store: Store, onExit: () -> Unit) {
     val context = LocalContext.current
     var blocked by remember { mutableStateOf(store.blocked) }
     var query by remember { mutableStateOf("") }
+    val listState = rememberLazyListState()
     val apps = remember {
-        val pm = context.packageManager
-        pm.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0)
-            .map { AppEntry(it.activityInfo.packageName, it.loadLabel(pm).toString()) }
-            .filter { it.pkg != context.packageName }
-            .distinctBy { it.pkg }
+        loadInstalledLauncherApps(context)
             .sortedWith(compareBy({ it.pkg !in store.blocked }, { it.label.lowercase() }))
     }
-    // Filter by app name or package name; prefix matches (e.g. "whats" -> "WhatsApp") rank first.
     val filtered = remember(apps, query) {
-        val needle = query.trim().lowercase()
-        if (needle.isEmpty()) {
-            apps
-        } else {
-            apps.filter { it.label.lowercase().contains(needle) || it.pkg.lowercase().contains(needle) }
-                .sortedWith(
-                    compareBy(
-                        { !it.label.lowercase().startsWith(needle) },
-                        { it.label.lowercase() },
-                    )
-                )
-        }
+        AppSearch.filterAndRank(apps, query, labelOf = { it.label })
     }
+    // Reset scroll to the top match whenever the search query changes so LazyColumn doesn't jump to anchored items.
+    LaunchedEffect(query) { listState.scrollToItem(0) }
 
     Text("Gesperrte Apps", fontSize = 26.sp, fontWeight = FontWeight.Bold)
     OutlinedTextField(
@@ -465,7 +611,7 @@ private fun ColumnScope.Apps(store: Store, onExit: () -> Unit) {
         },
         modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
     )
-    LazyColumn(Modifier.weight(1f)) {
+    LazyColumn(state = listState, modifier = Modifier.weight(1f)) {
         if (filtered.isEmpty()) {
             item {
                 Text(
@@ -503,9 +649,12 @@ private fun ColumnScope.GateTasksScreen(
     revision: Int,
     onPickApp: (minutes: Int) -> Unit,
     onPickWidget: (minutes: Int, customLabel: String) -> Unit,
+    onConfigureWidget: (GateTask) -> Unit,
     onDeleteWidget: (widgetId: Int) -> Unit,
     onExit: () -> Unit,
 ) {
+    val context = LocalContext.current
+    val widgetManager = remember(context) { AppWidgetManager.getInstance(context) }
     var tasks by remember(revision) { mutableStateOf(store.gateTasks) }
     var activeIds by remember(revision) { mutableStateOf(store.gateActiveTaskIds) }
     var includeQuiz by remember(revision) { mutableStateOf(store.gateIncludeQuiz) }
@@ -522,6 +671,11 @@ private fun ColumnScope.GateTasksScreen(
         GateTaskKind.WIDGET -> "🧩 ${task.minutes} Min. · Widget"
     }
 
+    fun isConfigurableWidget(task: GateTask): Boolean =
+        task.kind == GateTaskKind.WIDGET &&
+            task.widgetId != AppWidgetManager.INVALID_APPWIDGET_ID &&
+            widgetManager.getAppWidgetInfo(task.widgetId)?.configure != null
+
     fun persist(nextTasks: List<GateTask> = tasks, nextActive: Set<String> = activeIds, nextQuiz: Boolean = includeQuiz) {
         val validIds = nextTasks.map { it.id }.toSet()
         val cleanedActive = nextActive.intersect(validIds)
@@ -535,9 +689,19 @@ private fun ColumnScope.GateTasksScreen(
         store.gateIncludeQuiz = safeQuiz
     }
 
+    fun cycleMinutes(task: GateTask) {
+        val nextMin = if (task.minutes >= GateTask.MAX_MINUTES) GateTask.MIN_MINUTES else task.minutes + 1
+        persist(nextTasks = tasks.map { if (it.id == task.id) it.copy(minutes = nextMin) else it })
+    }
+
+    fun deleteTask(task: GateTask) {
+        if (task.kind == GateTaskKind.WIDGET) onDeleteWidget(task.widgetId)
+        persist(nextTasks = tasks.filterNot { it.id == task.id })
+    }
+
     Text("Sperr-Aufgaben", fontSize = 26.sp, fontWeight = FontWeight.Bold)
     Text(
-        "Erstelle Text-Aufgaben, App-Weiterleitungen oder Widgets (1–3 Min.) und ziehe sie ins aktive Feld.",
+        "Erstelle Text-Aufgaben, App-Weiterleitungen oder Widgets (1–3 Min.) – Dauer per Tipp anpassbar.",
         fontSize = 13.sp,
         color = Color.White.copy(alpha = 0.75f),
         modifier = Modifier.padding(top = 4.dp, bottom = 10.dp),
@@ -568,17 +732,52 @@ private fun ColumnScope.GateTasksScreen(
                         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                             Text("🎵 Gehörbildung (aktueller Modus)", Modifier.weight(1f), fontSize = 14.sp)
                             if (totalActiveCount > 1) {
-                                TextButton(onClick = { persist(nextQuiz = false) }) { Text("Raus") }
+                                TextButton(
+                                    onClick = { persist(nextQuiz = false) },
+                                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+                                    modifier = Modifier.defaultMinSize(minWidth = 1.dp, minHeight = 36.dp),
+                                ) { Text("Raus", fontSize = 13.sp) }
                             }
                         }
                     }
                     activeTasks.forEach { task ->
-                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(2.dp),
+                        ) {
                             Column(Modifier.weight(1f)) {
-                                Text(task.text, fontSize = 14.sp, fontWeight = FontWeight.Medium)
-                                Text(taskKindBadge(task), fontSize = 12.sp, color = Good)
+                                Text(
+                                    task.text,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Text(
+                                    "${taskKindBadge(task)} ↻",
+                                    fontSize = 12.sp,
+                                    color = Good,
+                                    modifier = Modifier.clickable { cycleMinutes(task) },
+                                )
                             }
-                            TextButton(onClick = { persist(nextActive = activeIds - task.id) }) { Text("Raus") }
+                            if (isConfigurableWidget(task)) {
+                                TextButton(
+                                    onClick = { onConfigureWidget(task) },
+                                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+                                    modifier = Modifier.defaultMinSize(minWidth = 1.dp, minHeight = 36.dp),
+                                ) { Text("⚙", fontSize = 16.sp) }
+                            }
+                            TextButton(
+                                onClick = { persist(nextActive = activeIds - task.id) },
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+                                modifier = Modifier.defaultMinSize(minWidth = 1.dp, minHeight = 36.dp),
+                            ) { Text("Raus", fontSize = 13.sp) }
+                            TextButton(
+                                onClick = { deleteTask(task) },
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+                                modifier = Modifier.defaultMinSize(minWidth = 1.dp, minHeight = 36.dp),
+                            ) { Text("×", color = Bad, fontSize = 18.sp) }
                         }
                     }
                 }
@@ -648,7 +847,7 @@ private fun ColumnScope.GateTasksScreen(
                                     text = trimmed,
                                     minutes = newMinutes,
                                 )
-                                persist(nextTasks = tasks + created)
+                                persist(nextTasks = tasks + created, nextActive = activeIds + created.id)
                                 newText = ""
                             }
                         },
@@ -665,7 +864,7 @@ private fun ColumnScope.GateTasksScreen(
         if (!includeQuiz || inactiveTasks.isNotEmpty()) {
             item {
                 Text(
-                    "Verfügbar (ins aktive Feld ziehen)",
+                    "Verfügbar (pausiert)",
                     fontSize = 15.sp,
                     fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.padding(top = 4.dp),
@@ -686,15 +885,34 @@ private fun ColumnScope.GateTasksScreen(
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
                     Column(Modifier.weight(1f)) {
-                        Text(task.text, fontSize = 14.sp)
-                        Text(taskKindBadge(task), fontSize = 12.sp, color = Color.White.copy(alpha = 0.7f))
+                        Text(
+                            task.text,
+                            fontSize = 14.sp,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            "${taskKindBadge(task)} ↻",
+                            fontSize = 12.sp,
+                            color = Color.White.copy(alpha = 0.7f),
+                            modifier = Modifier.clickable { cycleMinutes(task) },
+                        )
                     }
-                    Button(onClick = { persist(nextActive = activeIds + task.id) }) { Text("+ Aktiv", fontSize = 13.sp) }
+                    if (isConfigurableWidget(task)) {
+                        TextButton(
+                            onClick = { onConfigureWidget(task) },
+                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+                            modifier = Modifier.defaultMinSize(minWidth = 1.dp, minHeight = 36.dp),
+                        ) { Text("⚙", fontSize = 16.sp) }
+                    }
+                    Button(
+                        onClick = { persist(nextActive = activeIds + task.id) },
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                    ) { Text("+ Aktiv", fontSize = 13.sp) }
                     TextButton(
-                        onClick = {
-                            if (task.kind == GateTaskKind.WIDGET) onDeleteWidget(task.widgetId)
-                            persist(nextTasks = tasks.filterNot { it.id == task.id })
-                        }
+                        onClick = { deleteTask(task) },
+                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+                        modifier = Modifier.defaultMinSize(minWidth = 1.dp, minHeight = 36.dp),
                     ) {
                         Text("×", color = Bad, fontSize = 18.sp)
                     }
@@ -714,23 +932,14 @@ private fun ColumnScope.RedirectAppPicker(
 ) {
     val context = LocalContext.current
     var query by remember { mutableStateOf("") }
+    val listState = rememberLazyListState()
     val apps = remember {
-        val pm = context.packageManager
-        pm.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0)
-            .map { AppEntry(it.activityInfo.packageName, it.loadLabel(pm).toString()) }
-            .filter { it.pkg != context.packageName }
-            .distinctBy { it.pkg }
-            .sortedBy { it.label.lowercase() }
+        loadInstalledLauncherApps(context).sortedBy { it.label.lowercase() }
     }
     val filtered = remember(apps, query) {
-        val needle = query.trim().lowercase()
-        if (needle.isEmpty()) {
-            apps
-        } else {
-            apps.filter { it.label.lowercase().contains(needle) || it.pkg.lowercase().contains(needle) }
-                .sortedWith(compareBy({ !it.label.lowercase().startsWith(needle) }, { it.label.lowercase() }))
-        }
+        AppSearch.filterAndRank(apps, query, labelOf = { it.label })
     }
+    LaunchedEffect(query) { listState.scrollToItem(0) }
 
     Text("App zum Üben ($minutes Min.)", fontSize = 24.sp, fontWeight = FontWeight.Bold)
     OutlinedTextField(
@@ -745,7 +954,7 @@ private fun ColumnScope.RedirectAppPicker(
         },
         modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
     )
-    LazyColumn(Modifier.weight(1f)) {
+    LazyColumn(state = listState, modifier = Modifier.weight(1f)) {
         if (filtered.isEmpty()) {
             item {
                 Text(
@@ -765,6 +974,115 @@ private fun ColumnScope.RedirectAppPicker(
             ) {
                 Text(app.label, fontSize = 16.sp, modifier = Modifier.weight(1f))
                 Text("$minutes Min. →", fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
+            }
+        }
+    }
+    OutlinedButton(onClick = onCancel, modifier = Modifier.fillMaxWidth()) { Text("Abbrechen") }
+}
+
+/**
+ * Searchable in-app Android widget picker. Lists every installed AppWidget provider so HolzAffe
+ * can explicitly request bind consent (`ACTION_APPWIDGET_BIND`) and launch the widget's own
+ * configuration Activity without relying on the broken legacy Settings picker.
+ */
+@Composable
+private fun ColumnScope.WidgetPicker(
+    minutes: Int,
+    errorMessage: String?,
+    onPick: (WidgetProviderEntry) -> Unit,
+    onCancel: () -> Unit,
+) {
+    val context = LocalContext.current
+    var query by remember { mutableStateOf("") }
+    val listState = rememberLazyListState()
+    val entries = remember {
+        val pm = context.packageManager
+        val mgr = AppWidgetManager.getInstance(context)
+        mgr.installedProviders
+            .map { info ->
+                val pkg = info.provider.packageName
+                val appName = runCatching {
+                    pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString().trim()
+                }.getOrDefault(pkg).ifEmpty { pkg }
+                val rawWidgetLabel = runCatching {
+                    info.loadLabel(pm)?.toString()?.trim().orEmpty()
+                }.getOrDefault("")
+                val widgetLabel = rawWidgetLabel.ifBlank { "Widget" }
+                WidgetProviderEntry(
+                    info = info,
+                    key = info.provider.flattenToString(),
+                    appName = appName,
+                    widgetLabel = widgetLabel,
+                    configurable = info.configure != null,
+                )
+            }
+            .sortedWith(compareBy({ it.appName.lowercase() }, { it.widgetLabel.lowercase() }))
+    }
+    val filtered = remember(entries, query) {
+        AppSearch.filterAndRank(
+            entries,
+            query,
+            labelOf = { it.appName },
+            secondaryOf = { it.widgetLabel },
+        )
+    }
+    LaunchedEffect(query) { listState.scrollToItem(0) }
+
+    Text("Widget wählen ($minutes Min.)", fontSize = 24.sp, fontWeight = FontWeight.Bold)
+    if (!errorMessage.isNullOrBlank()) {
+        Text(
+            errorMessage,
+            fontSize = 13.sp,
+            color = Bad,
+            modifier = Modifier.padding(top = 4.dp),
+        )
+    }
+    OutlinedTextField(
+        value = query,
+        onValueChange = { query = it },
+        placeholder = { Text("Widget suchen (z. B. Widder, Eröffnung, Wassertiger)…") },
+        singleLine = true,
+        trailingIcon = if (query.isNotEmpty()) {
+            { TextButton(onClick = { query = "" }) { Text("×", fontSize = 20.sp) } }
+        } else {
+            null
+        },
+        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+    )
+    LazyColumn(state = listState, modifier = Modifier.weight(1f)) {
+        if (filtered.isEmpty()) {
+            item {
+                Text(
+                    "Kein Widget gefunden",
+                    color = Color.White.copy(alpha = 0.65f),
+                    modifier = Modifier.padding(vertical = 16.dp),
+                )
+            }
+        }
+        items(filtered, key = { it.key }) { entry ->
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clickable { onPick(entry) }
+                    .padding(vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(entry.appName, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        entry.widgetLabel,
+                        fontSize = 13.sp,
+                        color = Color.White.copy(alpha = 0.72f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Text(
+                    if (entry.configurable) "⚙ Konfigurierbar" else "Direkt",
+                    fontSize = 12.sp,
+                    color = if (entry.configurable) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.65f),
+                )
             }
         }
     }

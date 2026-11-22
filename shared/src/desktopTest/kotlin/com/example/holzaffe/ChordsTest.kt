@@ -455,4 +455,65 @@ class ChordsTest {
         }
         assertEquals(setOf(GateChallenge.QUIZ_ID, "t1", "t2", "t3"), seenIds)
     }
+
+    @Test
+    fun appSearchMatchesOnlyVisibleLabelsAndRanksPrefixesFirst() {
+        data class Entry(val label: String, val pkg: String, val secondary: String = "")
+
+        val entries = listOf(
+            Entry("WhatsApp", "com.whatsapp"),
+            Entry("Widder", "de.privat.widder"),
+            Entry("AnkiDroid", "com.ichi2.anki"),
+            Entry("Eröffnungspuzzle", "de.privat.eroeffnungspuzzle", "Lern-Widget"),
+            Entry("WoodRooster", "de.leidenschaftlicheslernen.woodrooster", "Eröffnungs-Widget"),
+            Entry("Schachtrainer", "de.leidenschaftlicheslernen.schachtrainer"),
+            Entry("YouTube", "com.google.android.youtube"),
+            Entry("YT Music", "com.google.android.apps.youtube.music"),
+            Entry("BandLab", "com.bandlab.bandlab"),
+        )
+
+        // Blank query keeps original order unchanged.
+        assertEquals(entries, AppSearch.filterAndRank(entries, "   ", labelOf = { it.label }))
+
+        // Searching "an" must NOT match "com.google.android.*" or "WhatsApp" via package names.
+        val anMatches = AppSearch.filterAndRank(entries, "an", labelOf = { it.label }).map { it.label }
+        assertEquals(listOf("AnkiDroid", "BandLab"), anMatches)
+
+        // Searching "id" matches visible labels containing "id" (ranked by earlier index), and "privat" must NOT match package names.
+        val idMatches = AppSearch.filterAndRank(entries, "id", labelOf = { it.label }).map { it.label }
+        assertEquals(listOf("Widder", "AnkiDroid"), idMatches)
+        assertEquals(emptyList(), AppSearch.filterAndRank(entries, "privat", labelOf = { it.label }))
+
+        // Umlaut folding works in both directions ("eröffnung" and "eroeffnung").
+        assertEquals(
+            listOf("Eröffnungspuzzle"),
+            AppSearch.filterAndRank(entries, "eröffnung", labelOf = { it.label }).map { it.label },
+        )
+        assertEquals(
+            listOf("Eröffnungspuzzle"),
+            AppSearch.filterAndRank(entries, "eroeffnung", labelOf = { it.label }).map { it.label },
+        )
+
+        // Exact > primary prefix > word prefix > secondary prefix > substring order.
+        val eroeffnungWithSecondary = AppSearch.filterAndRank(
+            entries,
+            "eröffnungs",
+            labelOf = { it.label },
+            secondaryOf = { it.secondary },
+        ).map { it.label }
+        assertEquals(listOf("Eröffnungspuzzle", "WoodRooster"), eroeffnungWithSecondary)
+
+        val musicMatches = AppSearch.filterAndRank(
+            listOf(
+                Entry("Apple Music", "a"),
+                Entry("YT Music", "b"),
+                Entry("Music", "c"),
+                Entry("MusicLab", "d"),
+                Entry("MyMusicPlayer", "e"),
+            ),
+            "music",
+            labelOf = { it.label },
+        ).map { it.label }
+        assertEquals(listOf("Music", "MusicLab", "YT Music", "Apple Music", "MyMusicPlayer"), musicMatches)
+    }
 }
