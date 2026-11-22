@@ -1,0 +1,45 @@
+name: Linux-Packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Optionaler Release-Tag, an den .deb und .tar.gz gehängt werden"
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    env:
+      TAG: ${{ inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Linux-Pakete bauen (.deb + .tar.gz)
+        run: ./tools/build-linux.sh
+      - name: Smoke-Test (.deb installieren, x86-64 prüfen, Start unter Xvfb)
+        run: |
+          VERSION="$(sed -n 's/^app = "\(.*\)"/\1/p' gradle/libs.versions.toml)"
+          DEB="dist/linux/HolzAffe_${VERSION}_linux-amd64.deb"
+          dpkg-deb -I "$DEB"
+          sudo dpkg -i "$DEB" || sudo apt-get -f install -y
+          file /opt/holzaffe/bin/HolzAffe | grep -q "x86-64"
+          file /opt/holzaffe/bin/HolzAffe
+          sudo apt-get update && sudo apt-get install -y xvfb
+          timeout 5 xvfb-run -a /opt/holzaffe/bin/HolzAffe || [ $? -eq 124 ]
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-packages
+          path: |
+            dist/linux/HolzAffe_*.deb
+            dist/linux/HolzAffe_*.tar.gz
