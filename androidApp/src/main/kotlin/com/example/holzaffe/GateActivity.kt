@@ -127,45 +127,25 @@ class GateActivity : ComponentActivity() {
                     when (challenge) {
                         is GateChallenge.Quiz -> {
                             var paused by remember(target, sessionId) { mutableStateOf(false) }
+                            val library = remember(target, sessionId) { Library(store) }
+                            val gateTarget = remember(target, sessionId, mode) {
+                                library.resolveSelection(store.gateSelection, mode)
+                            }
+                            // Apply optional per-run BPM/beat tempo for a single custom run, then restore global settings.
+                            DisposableEffect(target, sessionId) {
+                                val customTempo = (gateTarget as? RunTarget.Custom)?.run?.customTempo
+                                if (customTempo != null) Synth.chordMs = customTempo.chordMs else store.applySoundSettings()
+                                onDispose { store.applySoundSettings() }
+                            }
                             val quiz = remember(target, sessionId, mode, poolSize, keyMode) {
                                 // Read fresh per opening: the singleTask gate is reused via onNewIntent.
-                                val library = Library(store)
-                                val custom = library.target(store.gateRunId, mode) as? RunTarget.Custom
-                                if (custom != null) {
-                                    val fixedKey = if (keyMode != GateKeyMode.RANDOM) 48 + Random.nextInt(12) else null
-                                    val runDeck = CustomRunDeck(
-                                        custom.items,
-                                        allAudios = library.audios,
-                                        maxPoolSize = poolSize,
-                                        fixedKey = fixedKey,
-                                    )
-                                    GateQuiz(
-                                        poolSize = runDeck.pool.size,
-                                        subtitle = "Run „${custom.run.name}“",
-                                        mode = GameMode.MIX,
-                                        next = runDeck::nextQuestion,
-                                        record = runDeck::record,
-                                    )
-                                } else {
-                                    val deck = GateSessionDeck(
-                                        mode = mode,
-                                        maxPoolSize = poolSize,
-                                        keyMode = keyMode,
-                                        disabledIds = store.gateDisabledExerciseIds,
-                                    )
-                                    GateQuiz(
-                                        poolSize = deck.pool.size,
-                                        subtitle = when (keyMode) {
-                                            GateKeyMode.SINGLE_KEY_TONALITY ->
-                                                if (deck.sessionMinor == true) "1 Tonart (Moll)" else "1 Tonart (Dur)"
-                                            GateKeyMode.SAME_ROOT -> "1 Grundton (Dur + Moll)"
-                                            GateKeyMode.RANDOM -> "alle Tonarten"
-                                        },
-                                        mode = mode,
-                                        next = deck::nextQuestion,
-                                        record = {},
-                                    )
-                                }
+                                buildGateQuiz(
+                                    targetSelection = gateTarget,
+                                    library = library,
+                                    store = store,
+                                    poolSize = poolSize,
+                                    keyMode = keyMode,
+                                )
                             }
                             val nextGateQuestion = remember(quiz) { { quiz.next() } }
                             Column(
@@ -564,7 +544,7 @@ private fun TimedTaskGate(
     }
 }
 
-/** Question source of one gate opening: a built-in [GateSessionDeck] or an own [CustomRunDeck]. */
+/** Question source of one gate opening: a built-in [GateSessionDeck] or an own/combined [CustomRunDeck]. */
 private class GateQuiz(
     val poolSize: Int,
     val subtitle: String,
@@ -572,3 +552,115 @@ private class GateQuiz(
     val next: () -> Question,
     val record: (Boolean) -> Unit,
 )
+
+private fun keyModeSubtitle(keyMode: GateKeyMode, minor: Boolean?): String = when (keyMode) {
+    GateKeyMode.SINGLE_KEY_TONALITY -> when (minor) {
+        true -> "1 Tonart (Moll)"
+        false -> "1 Tonart (Dur)"
+        null -> "1 Tonart"
+    }
+    GateKeyMode.SAME_ROOT -> "1 Grundton (Dur + Moll)"
+    GateKeyMode.RANDOM -> "alle Tonarten"
+}
+
+private fun pickSessionTonality(items: List<RunItem>): Boolean? {
+    val tonalities = items.mapNotNullTo(HashSet()) { item ->
+        when (val ex = (item as? RunItem.Builtin)?.exercise) {
+            is Progression -> ex.minor
+            is Cadence -> ex.minor
+            else -> null
+        }
+    }
+    return when (tonalities.size) {
+        0 -> null
+        1 -> tonalities.first()
+        else -> Random.nextBoolean()
+    }
+}
+
+private fun buildGateQuiz(
+    targetSelection: RunTarget,
+    library: Library,
+    store: Store,
+    poolSize: Int,
+    keyMode: GateKeyMode,
+): GateQuiz = when (targetSelection) {
+    is RunTarget.Builtin -> {
+        val deck = GateSessionDeck(
+            mode = targetSelection.mode,
+            maxPoolSize = poolSize,
+            keyMode = keyMode,
+            disabledIds = store.gateDisabledExerciseIds,
+        )
+        GateQuiz(
+            poolSize = deck.pool.size,
+            subtitle = keyModeSubtitle(keyMode, deck.sessionMinor),
+            mode = targetSelection.mode,
+            next = deck::nextQuestion,
+            record = {},
+        )
+    }
+
+    is RunTarget.Custom -> {
+        val fixedKey = if (keyMode != GateKeyMode.RANDOM) 48 + Random.nextInt(12) else null
+        val singleTonality = if (keyMode == GateKeyMode.SINGLE_KEY_TONALITY) pickSessionTonality(targetSelection.items) else null
+        val deck = CustomRunDeck(
+            targetSelection.items,
+            allAudios = library.audios,
+            maxPoolSize = poolSize,
+            fixedKey = fixedKey,
+            singleTonality = singleTonality,
+            allCustomChords = library.customChords,
+        )
+        GateQuiz(
+            poolSize = deck.pool.size,
+            subtitle = "Run „${targetSelection.run.name}“ · ${keyModeSubtitle(keyMode, singleTonality)}",
+            mode = GameMode.MIX,
+            next = deck::nextQuestion,
+            record = deck::record,
+        )
+    }
+
+    is RunTarget.Combined -> {
+        if (targetSelection.runs.isEmpty()) {
+            val deck = GateSessionDeck(
+                mode = GameMode.MIX,
+                maxPoolSize = poolSize,
+                keyMode = keyMode,
+                disabledIds = store.gateDisabledExerciseIds,
+                modes = targetSelection.modes.toSet(),
+            )
+            GateQuiz(
+                poolSize = deck.pool.size,
+                subtitle = "${targetSelection.label} · ${keyModeSubtitle(keyMode, deck.sessionMinor)}",
+                mode = GameMode.MIX,
+                next = deck::nextQuestion,
+                record = {},
+            )
+        } else {
+            val disabled = store.gateDisabledExerciseIds
+            val modeItems = targetSelection.modes.flatMap { m ->
+                val allMode = EXERCISES_BY_MODE.getValue(m)
+                allMode.filter { it.id !in disabled }.ifEmpty { allMode }.map { RunItem.Builtin(it) }
+            }
+            val combinedItems = (modeItems + targetSelection.runs.flatMap { library.items(it) }).distinctBy { it.id }
+            val fixedKey = if (keyMode != GateKeyMode.RANDOM) 48 + Random.nextInt(12) else null
+            val singleTonality = if (keyMode == GateKeyMode.SINGLE_KEY_TONALITY) pickSessionTonality(combinedItems) else null
+            val deck = CustomRunDeck(
+                combinedItems,
+                allAudios = library.audios,
+                maxPoolSize = poolSize,
+                fixedKey = fixedKey,
+                singleTonality = singleTonality,
+                allCustomChords = library.customChords,
+            )
+            GateQuiz(
+                poolSize = deck.pool.size,
+                subtitle = "${targetSelection.label} · ${keyModeSubtitle(keyMode, singleTonality)}",
+                mode = GameMode.MIX,
+                next = deck::nextQuestion,
+                record = deck::record,
+            )
+        }
+    }
+}

@@ -1,8 +1,6 @@
 package com.example.holzaffe
 
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -94,11 +92,11 @@ fun main() = application {
     Window(
         onCloseRequest = ::exitApplication,
         title = "HolzAffe",
-        state = rememberWindowState(width = 440.dp, height = 780.dp),
+        state = rememberWindowState(width = 460.dp, height = 820.dp),
     ) {
         AppTheme {
             Surface(Modifier.fillMaxSize()) {
-                Box(Modifier.padding(24.dp)) { GameApp(scores, audioStorage = audioStorage) }
+                GameApp(scores, audioStorage = audioStorage)
             }
         }
     }

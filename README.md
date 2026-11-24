@@ -6,24 +6,19 @@ ein paar Aufgaben richtig erkannt hast.
 
 ## Das Spiel
 
-- **Einstellbare Run-Länge** (Standard 1:30, von 0:15 bis 10:00) im Puzzle-Rush-Format, mit **♪ Zerlegt**
-  (Arpeggio) und **⏸ Check** (Check-Modus). Bestwerte werden pro Modus bzw. Run *und* Länge gespeichert.
+- **Aufgeräumte 4-Tab-Oberfläche**: **Speedrun**, **Runs**, **Aufgaben** und **Weiterleitungen** (Desktop: **Speedrun** & **Runs**), plus Einstellungen (⚙) und App-Sperre-Status in der Kopfzeile.
+- **Multi-Run-Speedrun** mit einstellbarer Run-Länge (Standard 1:30, von 0:15 bis 10:00), **♪ Zerlegt** (Arpeggio) und **⏸ Check** (Check-Modus). Beliebig viele Modi und eigene `★`-Runs lassen sich kombinieren; Bestwerte werden pro Auswahl *und* Länge gespeichert. Lange auf einen Run oder Modus drücken öffnet direkt den Editor.
 - **Check-Modus (`⏸ Check`)**: Hält die Zeit im Run an, zeigt sowohl die Stufe (z. B. `I → ♭VII`) als auch
   die konkreten Akkordnamen in der gespielten Tonart (z. B. `G-Dur → F-Dur`) samt Einzeltönen und lässt
   jeden Akkord einzeln zum Doppelchecken (z. B. auf der Gitarre) abspielen.
-- **Vier Trainings-Modi plus Mix** (jeweils 9 Antworten zur Auswahl, auch für die App-Sperre wählbar):
+- **Vier Trainings-Modi plus Mix** (jeweils 9 Antworten zur Auswahl, auch für die App-Sperre kombinierbar):
   - **Stufen** (`I → …` / `i → …`): Dur `ii iii IV iv V ♭VI vi ♭VII vii°`, Moll `ii° III iv IV v V VI VII vii°`.
   - **Akkordtypen**: `Dur`, `Moll`, `dim`, `aug`, `sus2`, `sus4`, `maj7`, `7`, `m7` (eng und weit gelegt).
   - **Kadenzen**: typische 3-Akkord-Verbindungen in Dur und Moll (z. B. `I → IV → V`, `i → VI → VII`).
   - **Umkehrungen**: `Dur`, `Moll` und `dim` jeweils in Grundstellung, 1. und 2. Umkehrung (auf einheitlicher Basshöhe).
-  - **Mix**: mischt alle vier Modi gleichmäßig.
-- **Akkord-Dauer** einstellbar (Standard 0,55 s, von 0,20 s bis 3,00 s; der letzte Akkord klingt doppelt
-  so lang aus), mit ▶ zum Probehören. Gilt für Runs, Check-Modus und die App-Sperre.
-- **Eigene Runs & Audios**: Unter **Eigene Runs & Audios** lädst du eigene Aufnahmen hoch (Android: MP3,
-  M4A, WAV, OGG …; Desktop: WAV/AIFF) und benennst sie direkt in der App. Daraus und aus beliebigen
-  Stufen, Kadenzen, Akkordtypen und Umkehrungen stellst du eigene Runs zusammen, die neben den fünf
-  Modi als ★-Run auswählbar sind. Bei einem Audio wählst du den richtigen Namen; die anderen Aufnahmen
-  dienen als falsche Antworten. Verpasste Aufgaben kommen im Run kurz danach wieder.
+  - **Mix**: alle vier Modi gemeinsam ausgewählt.
+- **Tempo & Takt (BPM)**: Einstellbar über BPM (40–240) und Taktwert (`1/4`, `2/4`, `3/4`, `4/4`; der letzte Akkord klingt doppelt so lang aus), direkt im Speedrun-Tab, unter *Runs* und in den *Einstellungen*, sowie optional pro eigenem Run.
+- **Eigene Runs, synthetisierte Akkorde & Audios**: Unter **Runs → Eigene Inhalte** baust du eigene 1–4-Akkord-Übungen (19 Akkordtypen von Dur/Moll bis `m7♭5`, `dim7`, `add9`, `maj9`, `m9`, Umkehrungen, transponierend oder feste Tonart), lädst eigene Aufnahmen hoch (Android: MP3, M4A, WAV, OGG …; Desktop: WAV/AIFF) und stellst daraus eigene Runs zusammen. Verpasste Aufgaben kommen im Run kurz danach wieder.
 - **Fehler-Wiederholung**: Falsch beantwortete Aufgaben kehren nach kurzem Abstand automatisch zurück
   (auch über Runs, die App-Sperre und Neustarts hinweg), bis sie zweimal sicher sitzen.
 - Gespeichert werden das **All-time High** pro Modus, die **aktuelle Serie**

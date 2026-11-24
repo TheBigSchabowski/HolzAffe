@@ -56,6 +56,48 @@ class Store(context: Context) : Scores {
         get() = GameMode.fromKey(prefs.getString("gateMode", null))
         set(v) = prefs.edit().putString("gateMode", v.key).apply()
 
+    /**
+     * Multi-select run tokens (`M:<mode>` and `R:<runId>`) for the Android app gate.
+     * Automatically migrates legacy [gateRunId]/[gateMode] preferences.
+     */
+    var gateSelection: Set<String>
+        get() {
+            val raw = prefs.getString("gateSelection", "").orEmpty()
+            if (raw.isNotBlank()) {
+                val decoded = RunSelectionCodec.decode(raw)
+                if (decoded.isNotEmpty()) return decoded
+            }
+            val legacyRun = gateRunId
+            if (legacyRun.isNotEmpty()) return setOf(RunSelectionCodec.runToken(legacyRun))
+            return if (gateMode == GameMode.MIX) {
+                GameMode.PLAYABLE.map { RunSelectionCodec.modeToken(it) }.toSet()
+            } else {
+                setOf(RunSelectionCodec.modeToken(gateMode))
+            }
+        }
+        set(v) {
+            val clean = v.ifEmpty { setOf(RunSelectionCodec.modeToken(GameMode.DEGREES)) }
+            prefs.edit().putString("gateSelection", RunSelectionCodec.encode(clean)).apply()
+            val modes = GameMode.PLAYABLE.filter { RunSelectionCodec.modeToken(it) in clean }
+            val runTokens = clean.filter { it.startsWith(RunSelectionCodec.RUN_PREFIX) }
+            when {
+                runTokens.size == 1 && modes.isEmpty() -> {
+                    gateRunId = runTokens.first().removePrefix(RunSelectionCodec.RUN_PREFIX)
+                }
+                runTokens.isEmpty() && modes.size == 1 -> {
+                    gateRunId = ""
+                    gateMode = modes.first()
+                }
+                runTokens.isEmpty() && modes.size == GameMode.PLAYABLE.size -> {
+                    gateRunId = ""
+                    gateMode = GameMode.MIX
+                }
+                else -> {
+                    gateRunId = ""
+                }
+            }
+        }
+
     private fun highScoreKey(mode: GameMode): String =
         if (mode == GameMode.DEGREES) "highScore" else "highScore:${mode.key}"
 

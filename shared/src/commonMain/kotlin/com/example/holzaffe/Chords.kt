@@ -577,10 +577,22 @@ class GateSessionDeck(
     val keyMode: GateKeyMode = GateKeyMode.SINGLE_KEY_TONALITY,
     private val rnd: Random = Random,
     disabledIds: Set<String> = emptySet(),
+    modes: Set<GameMode>? = null,
 ) {
-    /** Exercises the user allowed for [mode] (falls back to all of them if none are left). */
-    private val enabled: List<Exercise> =
-        enabledExercises(mode, disabledIds).ifEmpty { enabledExercises(mode, emptySet()) }
+    private val resolvedModes: List<GameMode> = when {
+        !modes.isNullOrEmpty() -> {
+            if (GameMode.MIX in modes) GameMode.PLAYABLE
+            else GameMode.PLAYABLE.filter { it in modes }.ifEmpty { GameMode.PLAYABLE }
+        }
+        mode == GameMode.MIX -> GameMode.PLAYABLE
+        else -> listOf(mode)
+    }
+
+    /** Exercises the user allowed for the chosen mode(s), falling back to all if none remain. */
+    private val enabled: List<Exercise> = run {
+        val all = resolvedModes.flatMap { EXERCISES_BY_MODE.getValue(it) }.distinctBy { it.id }
+        all.filter { it.id !in disabledIds }.ifEmpty { all }
+    }
 
     /** Fixed subset of distinct exercises active for this single app-start challenge. */
     val pool: List<Exercise>

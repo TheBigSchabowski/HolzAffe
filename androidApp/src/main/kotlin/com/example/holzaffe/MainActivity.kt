@@ -16,33 +16,38 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -54,6 +59,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -64,15 +70,15 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import java.io.File
 import java.util.UUID
 
-private enum class MainScreen { HOME, APPS, TASKS, EXERCISES, PICK_REDIRECT_APP, PICK_WIDGET }
+private enum class OverlayScreen { NONE, GATE_SETTINGS, APPS, EXERCISES, PICK_REDIRECT_APP, PICK_WIDGET }
 
 class MainActivity : ComponentActivity() {
     private lateinit var store: Store
     private lateinit var widgetHost: AppWidgetHost
+    private val control = RunControl()
 
-    private var screen by mutableStateOf(MainScreen.HOME)
+    private var overlayScreen by mutableStateOf(OverlayScreen.NONE)
     private var widgetMinutes by mutableIntStateOf(1)
-    private var widgetCustomLabel by mutableStateOf("")
     private var widgetError by mutableStateOf<String?>(null)
 
     // Pending widget metadata while Android's bind permission / widget configurator runs.
@@ -80,7 +86,8 @@ class MainActivity : ComponentActivity() {
     private var pendingWidgetMinutes: Int = 1
     private var pendingWidgetCustomLabel: String = ""
     private var pendingWidgetReconfigure: Boolean = false
-    // Bumped whenever a widget task is added/reconfigured so Compose reloads Store.
+
+    // Bumped whenever a gate task or widget is added/reconfigured so Compose tabs reload Store.
     private var tasksRevision by mutableIntStateOf(0)
 
     private var pendingAudioCallback: ((ImportedAudio?) -> Unit)? = null
@@ -156,83 +163,175 @@ class MainActivity : ComponentActivity() {
         setContent {
             AppTheme {
                 Surface(Modifier.fillMaxSize()) {
+                    val context = LocalContext.current
                     var redirectMinutes by remember { mutableIntStateOf(1) }
-                    val control = remember { RunControl() }
-                    BackHandler(enabled = screen != MainScreen.HOME || control.canGoBack) {
-                        if (screen == MainScreen.HOME) {
-                            control.back()
-                        } else {
-                            screen = when (screen) {
-                                MainScreen.PICK_REDIRECT_APP, MainScreen.PICK_WIDGET -> MainScreen.TASKS
-                                else -> MainScreen.HOME
+                    var overlayOn by remember { mutableStateOf(Settings.canDrawOverlays(context)) }
+                    var gateOn by remember { mutableStateOf(gateEnabled(context)) }
+
+                    // Re-check both system permissions whenever the user returns from Android Settings.
+                    LifecycleResumeEffect(Unit) {
+                        overlayOn = Settings.canDrawOverlays(context)
+                        gateOn = gateEnabled(context)
+                        onPauseOrDispose {}
+                    }
+
+                    BackHandler(enabled = overlayScreen != OverlayScreen.NONE || control.canGoBack) {
+                        if (overlayScreen != OverlayScreen.NONE) {
+                            overlayScreen = when (overlayScreen) {
+                                OverlayScreen.APPS -> OverlayScreen.GATE_SETTINGS
+                                OverlayScreen.PICK_REDIRECT_APP,
+                                OverlayScreen.PICK_WIDGET,
+                                OverlayScreen.EXERCISES,
+                                OverlayScreen.GATE_SETTINGS,
+                                OverlayScreen.NONE,
+                                -> OverlayScreen.NONE
                             }
                             widgetError = null
+                        } else {
+                            control.back()
                         }
                     }
-                    Column(Modifier.safeDrawingPadding().padding(24.dp).fillMaxSize()) {
-                        when (screen) {
-                            MainScreen.APPS -> Apps(store, onExit = { screen = MainScreen.HOME })
-                            MainScreen.EXERCISES -> GateExercisesScreen(store, onExit = { screen = MainScreen.HOME })
-                            MainScreen.PICK_REDIRECT_APP -> RedirectAppPicker(
-                                minutes = redirectMinutes,
-                                onPick = { entry ->
-                                    val created = GateTask(
-                                        id = "a_${System.currentTimeMillis()}_${store.gateTasks.size}",
-                                        text = entry.label,
-                                        minutes = redirectMinutes,
-                                        kind = GateTaskKind.APP,
-                                        targetPackage = entry.pkg,
-                                    )
-                                    store.gateTasks = store.gateTasks + created
-                                    store.gateActiveTaskIds = store.gateActiveTaskIds + created.id
-                                    tasksRevision++
-                                    screen = MainScreen.TASKS
-                                },
-                                onCancel = { screen = MainScreen.TASKS },
-                            )
-                            MainScreen.PICK_WIDGET -> WidgetPicker(
-                                minutes = widgetMinutes,
-                                errorMessage = widgetError,
-                                onPick = { entry ->
-                                    widgetError = null
-                                    onSelectWidgetProvider(entry.info, widgetMinutes, widgetCustomLabel)
-                                },
-                                onCancel = {
-                                    widgetError = null
-                                    screen = MainScreen.TASKS
-                                },
-                            )
-                            MainScreen.TASKS -> GateTasksScreen(
-                                store = store,
-                                revision = tasksRevision,
-                                onPickApp = { mins ->
-                                    redirectMinutes = mins
-                                    screen = MainScreen.PICK_REDIRECT_APP
-                                },
-                                onPickWidget = { mins, customLabel ->
-                                    widgetMinutes = mins
-                                    widgetCustomLabel = customLabel.trim()
-                                    widgetError = null
-                                    screen = MainScreen.PICK_WIDGET
-                                },
-                                onConfigureWidget = { task ->
-                                    reconfigureWidgetTask(task)
-                                },
-                                onDeleteWidget = { widgetId ->
-                                    if (widgetId != AppWidgetManager.INVALID_APPWIDGET_ID) {
-                                        runCatching { widgetHost.deleteAppWidgetId(widgetId) }
-                                    }
-                                },
-                                onExit = { screen = MainScreen.HOME },
-                            )
-                            MainScreen.HOME -> GameApp(store, control, audioStorage = audioStorage) {
-                                GateSection(
+
+                    Box(Modifier.safeDrawingPadding().fillMaxSize()) {
+                        when (overlayScreen) {
+                            OverlayScreen.GATE_SETTINGS -> Column(
+                                Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp),
+                            ) {
+                                GateSettingsScreen(
                                     store = store,
-                                    onApps = { screen = MainScreen.APPS },
-                                    onTasks = { screen = MainScreen.TASKS },
-                                    onExercises = { screen = MainScreen.EXERCISES },
+                                    overlayOn = overlayOn,
+                                    gateOn = gateOn,
+                                    onApps = { overlayScreen = OverlayScreen.APPS },
+                                    onBack = { overlayScreen = OverlayScreen.NONE },
                                 )
                             }
+
+                            OverlayScreen.APPS -> Column(
+                                Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp),
+                            ) {
+                                Apps(store, onExit = { overlayScreen = OverlayScreen.GATE_SETTINGS })
+                            }
+
+                            OverlayScreen.EXERCISES -> Column(
+                                Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp),
+                            ) {
+                                GateExercisesScreen(store, onExit = { overlayScreen = OverlayScreen.NONE })
+                            }
+
+                            OverlayScreen.PICK_REDIRECT_APP -> Column(
+                                Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp),
+                            ) {
+                                RedirectAppPicker(
+                                    minutes = redirectMinutes,
+                                    onPick = { entry ->
+                                        val created = GateTask(
+                                            id = "a_${System.currentTimeMillis()}_${store.gateTasks.size}",
+                                            text = entry.label,
+                                            minutes = redirectMinutes,
+                                            kind = GateTaskKind.APP,
+                                            targetPackage = entry.pkg,
+                                        )
+                                        store.gateTasks = store.gateTasks + created
+                                        store.gateActiveTaskIds = store.gateActiveTaskIds + created.id
+                                        tasksRevision++
+                                        control.tab = AppTab.REDIRECTS
+                                        overlayScreen = OverlayScreen.NONE
+                                    },
+                                    onCancel = { overlayScreen = OverlayScreen.NONE },
+                                )
+                            }
+
+                            OverlayScreen.PICK_WIDGET -> Column(
+                                Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp),
+                            ) {
+                                WidgetPicker(
+                                    minutes = widgetMinutes,
+                                    errorMessage = widgetError,
+                                    onPick = { entry, customLabel ->
+                                        widgetError = null
+                                        onSelectWidgetProvider(entry.info, widgetMinutes, customLabel)
+                                    },
+                                    onCancel = {
+                                        widgetError = null
+                                        overlayScreen = OverlayScreen.NONE
+                                    },
+                                )
+                            }
+
+                            OverlayScreen.NONE -> GameApp(
+                                scores = store,
+                                control = control,
+                                audioStorage = audioStorage,
+                                showAndroidTabs = true,
+                                topBarExtra = {
+                                    GateStatusPill(
+                                        active = overlayOn && gateOn,
+                                        blockedCount = store.blocked.size,
+                                        onClick = { overlayScreen = OverlayScreen.GATE_SETTINGS },
+                                    )
+                                },
+                                runsGateContent = { libRevision ->
+                                    GateQuizSectionCard(
+                                        store = store,
+                                        libraryRevision = libRevision,
+                                        tasksRevision = tasksRevision,
+                                        onExercises = { overlayScreen = OverlayScreen.EXERCISES },
+                                        onCreateRun = { control.page = GamePage.EditRun(null) },
+                                        onEditRun = { id -> control.page = GamePage.EditRun(id) },
+                                        onChanged = { tasksRevision++ },
+                                    )
+                                },
+                                tasksTabContent = {
+                                    AufgabenTab(
+                                        store = store,
+                                        revision = tasksRevision,
+                                        overlayOn = overlayOn,
+                                        gateOn = gateOn,
+                                        onOpenGateSettings = { overlayScreen = OverlayScreen.GATE_SETTINGS },
+                                        onChanged = { tasksRevision++ },
+                                    )
+                                },
+                                redirectsTabContent = {
+                                    WeiterleitungenTab(
+                                        store = store,
+                                        revision = tasksRevision,
+                                        overlayOn = overlayOn,
+                                        gateOn = gateOn,
+                                        onPickApp = { mins ->
+                                            redirectMinutes = mins
+                                            overlayScreen = OverlayScreen.PICK_REDIRECT_APP
+                                        },
+                                        onPickWidget = { mins ->
+                                            widgetMinutes = mins
+                                            widgetError = null
+                                            overlayScreen = OverlayScreen.PICK_WIDGET
+                                        },
+                                        onConfigureWidget = { task -> reconfigureWidgetTask(task) },
+                                        onDeleteWidget = { widgetId ->
+                                            if (widgetId != AppWidgetManager.INVALID_APPWIDGET_ID) {
+                                                runCatching { widgetHost.deleteAppWidgetId(widgetId) }
+                                            }
+                                        },
+                                        onOpenGateSettings = { overlayScreen = OverlayScreen.GATE_SETTINGS },
+                                        onChanged = { tasksRevision++ },
+                                    )
+                                },
+                                settingsExtra = {
+                                    SectionCard {
+                                        Text("App-Sperre", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = AppColors.TextPrimary)
+                                        NavRow(
+                                            title = "Berechtigungen, Apps & Wieder-Sperren",
+                                            subtitle = if (overlayOn && gateOn) {
+                                                "Aktiv · ${store.blocked.size} App(s) gesperrt"
+                                            } else {
+                                                "Berechtigungen müssen noch eingerichtet werden"
+                                            },
+                                            badge = if (overlayOn && gateOn) "Aktiv" else "Setup",
+                                            onClick = { overlayScreen = OverlayScreen.GATE_SETTINGS },
+                                        )
+                                    }
+                                },
+                            )
                         }
                     }
                 }
@@ -386,7 +485,8 @@ class MainActivity : ComponentActivity() {
         pendingWidgetReconfigure = false
         widgetError = null
         tasksRevision++
-        screen = MainScreen.TASKS
+        control.tab = AppTab.REDIRECTS
+        overlayScreen = OverlayScreen.NONE
     }
 
     override fun onStop() {
@@ -400,52 +500,631 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-/** The app-gate block at the bottom of the home screen, with One-Sec-style permission setup. */
+/** Compact lock pill in the top bar showing gate status and opening [GateSettingsScreen]. */
 @Composable
-private fun ColumnScope.GateSection(
-    store: Store,
-    onApps: () -> Unit,
-    onTasks: () -> Unit,
-    onExercises: () -> Unit,
+private fun GateStatusPill(
+    active: Boolean,
+    blockedCount: Int,
+    onClick: () -> Unit,
 ) {
-    val context = LocalContext.current
-    var overlayOn by remember { mutableStateOf(Settings.canDrawOverlays(context)) }
-    var gateOn by remember { mutableStateOf(gateEnabled(context)) }
+    val bg = if (active) AppColors.GoodSoft else AppColors.AccentGoldSoft
+    val fg = if (active) Good else AppColors.AccentGold
+    Surface(
+        modifier = Modifier
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(10.dp),
+        color = bg,
+        border = BorderStroke(1.dp, fg.copy(alpha = 0.5f)),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(5.dp),
+        ) {
+            Icon(AppIcons.Lock, contentDescription = null, tint = fg, modifier = Modifier.size(14.dp))
+            Text(
+                text = if (active) "$blockedCount Apps" else "Einrichten",
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = fg,
+            )
+        }
+    }
+}
+
+@Composable
+private fun PermissionBanner(onOpenGateSettings: () -> Unit) {
+    SectionCard(highlighted = true, padding = PaddingValues(12.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth().clickable(onClick = onOpenGateSettings),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Icon(AppIcons.Lock, contentDescription = null, tint = AppColors.AccentGold, modifier = Modifier.size(20.dp))
+            Column(Modifier.weight(1f)) {
+                Text("App-Sperre noch nicht aktiv", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = AppColors.AccentGold)
+                Text("Tippe hier, um Berechtigungen & gesperrte Apps einzurichten.", fontSize = 12.sp, color = AppColors.TextSecondary)
+            }
+            Icon(AppIcons.ChevronRight, contentDescription = null, tint = AppColors.AccentGold, modifier = Modifier.size(18.dp))
+        }
+    }
+}
+
+/** Summary pill showing what is currently in the app-gate rotation pool across tabs. */
+@Composable
+private fun RotationSummaryCard(store: Store, revision: Int) {
+    val includeQuiz = remember(revision) { store.gateIncludeQuiz }
+    val activeTasks = remember(revision) { store.activeGateTasks() }
+    val textCount = activeTasks.count { it.kind == GateTaskKind.TEXT }
+    val redirectCount = activeTasks.count { it.kind == GateTaskKind.APP || it.kind == GateTaskKind.WIDGET }
+
+    val parts = buildList {
+        if (includeQuiz) add("Gehörbildung")
+        if (textCount > 0) add("$textCount Aufgabe(n)")
+        if (redirectCount > 0) add("$redirectCount Weiterleitung(en)")
+    }
+    val summary = if (parts.isEmpty()) "Nur Gehörbildung" else parts.joinToString(" · ")
+
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        color = AppColors.SurfaceCard,
+        border = BorderStroke(1.dp, AppColors.BorderSubtle),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text("Aktive Rotation:", fontSize = 12.sp, color = AppColors.TextSecondary)
+            Text(
+                summary,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = AppColors.AccentGold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+        }
+    }
+}
+
+/** Embedded inside the `Runs` tab on Android: configures which ear-training runs the app gate asks. */
+@Composable
+private fun GateQuizSectionCard(
+    store: Store,
+    libraryRevision: Int,
+    tasksRevision: Int,
+    onExercises: () -> Unit,
+    onCreateRun: () -> Unit,
+    onEditRun: (String) -> Unit,
+    onChanged: () -> Unit,
+) {
+    val library = remember { Library(store) }
+    val runs = remember(libraryRevision) { library.runs }
+    val audios = remember(libraryRevision) { library.audios }
+    val customChords = remember(libraryRevision) { library.customChords }
+    var selection by remember(libraryRevision) { mutableStateOf(store.gateSelection) }
+    var includeQuiz by remember(tasksRevision) { mutableStateOf(store.gateIncludeQuiz) }
+    val activeCustomTasks = remember(tasksRevision) { store.activeGateTasks() }
     var required by remember { mutableIntStateOf(store.required) }
     var gatePoolSize by remember { mutableIntStateOf(store.gatePoolSize) }
     var gateKeyMode by remember { mutableStateOf(store.gateKeyMode) }
-    var gateRelockMode by remember { mutableStateOf(store.gateRelockMode) }
-    var minutes by remember { mutableIntStateOf(store.unlockMinutes) }
-    var gateMode by remember { mutableStateOf(store.gateMode) }
-    val library = remember { Library(store) }
-    val runs = remember { library.runs }
-    var gateRunId by remember { mutableStateOf(store.gateRunId.takeIf { id -> runs.any { it.id == id } }.orEmpty()) }
+    var showRules by remember { mutableStateOf(false) }
 
-    // Re-check both system permissions whenever the user returns from Android Settings.
-    LifecycleResumeEffect(Unit) {
-        overlayOn = Settings.canDrawOverlays(context)
-        gateOn = gateEnabled(context)
-        onPauseOrDispose {}
+    val target = remember(selection, libraryRevision) { library.resolveSelection(selection, store.gameMode) }
+    val selectedBuiltinModes = remember(target) {
+        when (target) {
+            is RunTarget.Builtin -> if (target.mode == GameMode.MIX) GameMode.PLAYABLE else listOf(target.mode)
+            is RunTarget.Combined -> target.modes
+            is RunTarget.Custom -> emptyList()
+        }
     }
 
-    HorizontalDivider(Modifier.padding(vertical = 4.dp))
-    Text("App-Sperre", fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
+    SectionCard {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Gehörbildung in der App-Sperre", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = AppColors.TextPrimary)
+                Text(
+                    if (includeQuiz) "Aktiv · beim Öffnen einer gesperrten App" else "Pausiert (andere Sperr-Aufgaben aktiv)",
+                    fontSize = 12.sp,
+                    color = if (includeQuiz) Good else AppColors.TextSecondary,
+                )
+            }
+            Switch(
+                checked = includeQuiz,
+                enabled = !includeQuiz || activeCustomTasks.isNotEmpty(),
+                onCheckedChange = { checked ->
+                    if (!checked && activeCustomTasks.isEmpty()) return@Switch
+                    includeQuiz = checked
+                    store.gateIncludeQuiz = checked
+                    onChanged()
+                },
+                colors = SwitchDefaults.colors(
+                    checkedThumbColor = AppColors.OnAccent,
+                    checkedTrackColor = AppColors.AccentGold,
+                ),
+            )
+        }
+        if (includeQuiz && activeCustomTasks.isEmpty()) {
+            Text(
+                "Tipp: Um Gehörbildung in der Sperre auszuschalten, aktiviere erst eine Aufgabe oder Weiterleitung.",
+                fontSize = 11.sp,
+                color = AppColors.TextSecondary,
+            )
+        }
 
-    if (overlayOn && gateOn) {
-        Text("Aktiv · ${store.blocked.size} App(s) gesperrt", color = Good, fontWeight = FontWeight.SemiBold)
-    } else {
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(14.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        MultiRunPicker(
+            selectedTokens = selection,
+            runs = runs,
+            itemCountOf = { library.items(it, audios, customChords).size },
+            onToggleToken = { token ->
+                val next = RunSelectionCodec.toggle(selection, token)
+                selection = next
+                store.gateSelection = next
+            },
+            onResetToModes = { next ->
+                selection = next
+                store.gateSelection = next
+            },
+            onCreateRun = onCreateRun,
+            onLongClickRun = { run -> onEditRun(run.id) },
+            onLongClickMode = { onExercises() },
+        )
+
+        if (selectedBuiltinModes.isNotEmpty()) {
+            val allInSelectedModes = selectedBuiltinModes.flatMap { EXERCISES_BY_MODE.getValue(it) }
+            val disabled = store.gateDisabledExerciseIds
+            val enabledCount = allInSelectedModes.count { it.id !in disabled }
+            NavRow(
+                title = "Einzelne Akkorde & Fragen filtern",
+                subtitle = if (enabledCount == 0 || enabledCount == allInSelectedModes.size) {
+                    "Alle ${allInSelectedModes.size} Aufgaben der gewählten Modi aktiv"
+                } else {
+                    "$enabledCount von ${allInSelectedModes.size} Aufgaben aktiv"
+                },
+                onClick = onExercises,
+            )
+        }
+
+        HorizontalDivider(color = AppColors.BorderSubtle.copy(alpha = 0.65f))
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(10.dp))
+                .clickable { showRules = !showRules }
+                .padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Column(
-                Modifier.fillMaxWidth().padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                Text("Berechtigungen einrichten", fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+            Column(Modifier.weight(1f)) {
+                Text("Sperr-Regeln", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = AppColors.TextPrimary)
+                Text(
+                    "$required richtige · max. $gatePoolSize Aufg. · ${gateKeyMode.label}",
+                    fontSize = 12.sp,
+                    color = AppColors.TextSecondary,
+                )
+            }
+            Icon(
+                imageVector = if (showRules) AppIcons.ChevronDown else AppIcons.ChevronRight,
+                contentDescription = null,
+                tint = AppColors.TextSecondary,
+                modifier = Modifier.size(18.dp),
+            )
+        }
 
-                // Step 1: Display over other apps (SYSTEM_ALERT_WINDOW) — ensures GateActivity opens reliably.
+        if (showRules) {
+            Stepper("Richtige zum Öffnen", required, 1..20) { required = it; store.required = it }
+            Stepper("Wechselnde Aufgaben pro Sperre", gatePoolSize, 2..18) { gatePoolSize = it; store.gatePoolSize = it }
+            Text("Tonart pro Sperre", fontSize = 13.sp, color = AppColors.TextSecondary)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                GateKeyMode.entries.forEach { option ->
+                    ChipButton(
+                        label = option.label,
+                        selected = option == gateKeyMode,
+                        onClick = { gateKeyMode = option; store.gateKeyMode = option },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+            Text(
+                when (gateKeyMode) {
+                    GateKeyMode.SINGLE_KEY_TONALITY -> "Nur eine Tonart (z. B. nur F-Dur oder nur F-Moll) – wechselt bei jedem Öffnen"
+                    GateKeyMode.SAME_ROOT -> "Gleicher Grundton (z. B. F-Dur & F-Moll) – wechselt bei jedem Öffnen"
+                    GateKeyMode.RANDOM -> "Jede Aufgabe in beliebiger Tonart (Dur & Moll gemischt)"
+                },
+                fontSize = 12.sp,
+                color = AppColors.TextSecondary,
+            )
+        }
+    }
+}
+
+/** Tab 3 (Android): Timed text practice tasks (1..3 min) for the app gate. */
+@Composable
+private fun AufgabenTab(
+    store: Store,
+    revision: Int,
+    overlayOn: Boolean,
+    gateOn: Boolean,
+    onOpenGateSettings: () -> Unit,
+    onChanged: () -> Unit,
+) {
+    var tasks by remember(revision) { mutableStateOf(store.gateTasks) }
+    var activeIds by remember(revision) { mutableStateOf(store.gateActiveTaskIds) }
+    var newText by remember { mutableStateOf("") }
+    var newMinutes by remember { mutableIntStateOf(1) }
+    var deleteCandidate by remember { mutableStateOf<GateTask?>(null) }
+
+    fun persist(nextTasks: List<GateTask> = tasks, nextActive: Set<String> = activeIds) {
+        val validIds = nextTasks.map { it.id }.toSet()
+        val cleanedActive = nextActive.intersect(validIds)
+        // Always keep at least one active gate entry (fall back to ear-training if all tasks are turned off).
+        if (cleanedActive.isEmpty()) store.gateIncludeQuiz = true
+        tasks = nextTasks
+        activeIds = cleanedActive
+        store.gateTasks = nextTasks
+        store.gateActiveTaskIds = cleanedActive
+        onChanged()
+    }
+
+    deleteCandidate?.let { task ->
+        ConfirmDeleteDialog(
+            title = "Aufgabe löschen?",
+            message = "„${task.text}“ wird dauerhaft entfernt.",
+            onConfirm = {
+                persist(nextTasks = tasks.filterNot { it.id == task.id })
+                deleteCandidate = null
+            },
+            onDismiss = { deleteCandidate = null },
+        )
+    }
+
+    val textTasks = tasks.filter { it.kind == GateTaskKind.TEXT }
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        if (!overlayOn || !gateOn) {
+            item { PermissionBanner(onOpenGateSettings) }
+        }
+        item { RotationSummaryCard(store, revision) }
+
+        item {
+            SectionCard {
+                Text("Neue Text-Aufgabe", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = AppColors.TextPrimary)
+                Text(
+                    "Erscheint beim Öffnen einer gesperrten App als Timer-Aufgabe (z. B. Tonleitern oder Akkorde üben).",
+                    fontSize = 12.sp,
+                    color = AppColors.TextSecondary,
+                )
+                OutlinedTextField(
+                    value = newText,
+                    onValueChange = { newText = it },
+                    placeholder = { Text("z. B. 2 Min. C-Dur über das Griffbrett…") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                DurationPickerRow(selectedMinutes = newMinutes, onSelect = { newMinutes = it })
+                Button(
+                    onClick = {
+                        val trimmed = newText.trim()
+                        if (trimmed.isNotEmpty()) {
+                            val created = GateTask(
+                                id = "t_${System.currentTimeMillis()}_${tasks.size}",
+                                text = trimmed,
+                                minutes = newMinutes,
+                                kind = GateTaskKind.TEXT,
+                            )
+                            persist(nextTasks = tasks + created, nextActive = activeIds + created.id)
+                            newText = ""
+                        }
+                    },
+                    enabled = newText.isNotBlank(),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(AppIcons.Plus, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Aufgabe hinzufügen", fontWeight = FontWeight.SemiBold)
+                }
+            }
+        }
+
+        if (textTasks.isEmpty()) {
+            item {
+                SectionCard {
+                    Text(
+                        "Noch keine Text-Aufgaben angelegt.",
+                        fontSize = 14.sp,
+                        color = AppColors.TextSecondary,
+                    )
+                }
+            }
+        } else {
+            items(textTasks, key = { it.id }) { task ->
+                val isActive = task.id in activeIds
+                SectionCard(highlighted = isActive, padding = PaddingValues(14.dp)) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                task.text,
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = AppColors.TextPrimary,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                if (isActive) "Aktiv in der Sperre" else "Pausiert",
+                                fontSize = 12.sp,
+                                color = if (isActive) Good else AppColors.TextSecondary,
+                            )
+                        }
+                        Switch(
+                            checked = isActive,
+                            onCheckedChange = { checked ->
+                                val nextActive = if (checked) activeIds + task.id else activeIds - task.id
+                                persist(nextActive = nextActive)
+                            },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = AppColors.OnAccent,
+                                checkedTrackColor = AppColors.AccentGold,
+                            ),
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        DurationPickerRow(
+                            selectedMinutes = task.minutes,
+                            onSelect = { mins ->
+                                persist(nextTasks = tasks.map { if (it.id == task.id) it.copy(minutes = mins) else it })
+                            },
+                            modifier = Modifier.weight(1f),
+                        )
+                        IconButton(onClick = { deleteCandidate = task }, modifier = Modifier.size(36.dp)) {
+                            Icon(AppIcons.Trash, contentDescription = "Löschen", tint = Bad, modifier = Modifier.size(18.dp))
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** Tab 4 (Android): App redirects and configured live Android widgets (1..3 min) for the app gate. */
+@Composable
+private fun WeiterleitungenTab(
+    store: Store,
+    revision: Int,
+    overlayOn: Boolean,
+    gateOn: Boolean,
+    onPickApp: (minutes: Int) -> Unit,
+    onPickWidget: (minutes: Int) -> Unit,
+    onConfigureWidget: (GateTask) -> Unit,
+    onDeleteWidget: (widgetId: Int) -> Unit,
+    onOpenGateSettings: () -> Unit,
+    onChanged: () -> Unit,
+) {
+    val context = LocalContext.current
+    val widgetManager = remember(context) { AppWidgetManager.getInstance(context) }
+    var tasks by remember(revision) { mutableStateOf(store.gateTasks) }
+    var activeIds by remember(revision) { mutableStateOf(store.gateActiveTaskIds) }
+    var newMinutes by remember { mutableIntStateOf(1) }
+    var deleteCandidate by remember { mutableStateOf<GateTask?>(null) }
+
+    fun isConfigurableWidget(task: GateTask): Boolean =
+        task.kind == GateTaskKind.WIDGET &&
+            task.widgetId != AppWidgetManager.INVALID_APPWIDGET_ID &&
+            widgetManager.getAppWidgetInfo(task.widgetId)?.configure != null
+
+    fun persist(nextTasks: List<GateTask> = tasks, nextActive: Set<String> = activeIds) {
+        val validIds = nextTasks.map { it.id }.toSet()
+        val cleanedActive = nextActive.intersect(validIds)
+        if (cleanedActive.isEmpty()) store.gateIncludeQuiz = true
+        tasks = nextTasks
+        activeIds = cleanedActive
+        store.gateTasks = nextTasks
+        store.gateActiveTaskIds = cleanedActive
+        onChanged()
+    }
+
+    deleteCandidate?.let { task ->
+        ConfirmDeleteDialog(
+            title = "Weiterleitung löschen?",
+            message = "„${task.text}“ wird dauerhaft entfernt.",
+            onConfirm = {
+                if (task.kind == GateTaskKind.WIDGET) onDeleteWidget(task.widgetId)
+                persist(nextTasks = tasks.filterNot { it.id == task.id })
+                deleteCandidate = null
+            },
+            onDismiss = { deleteCandidate = null },
+        )
+    }
+
+    val redirects = tasks.filter { it.kind == GateTaskKind.APP || it.kind == GateTaskKind.WIDGET }
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        if (!overlayOn || !gateOn) {
+            item { PermissionBanner(onOpenGateSettings) }
+        }
+        item { RotationSummaryCard(store, revision) }
+
+        item {
+            SectionCard {
+                Text("Neue Weiterleitung", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = AppColors.TextPrimary)
+                Text(
+                    "Leitet beim Öffnen einer gesperrten App erst für 1–3 Min. in eine Lern-App (z. B. Anki, Widder) oder ein konfiguriertes Widget.",
+                    fontSize = 12.sp,
+                    color = AppColors.TextSecondary,
+                )
+                DurationPickerRow(selectedMinutes = newMinutes, onSelect = { newMinutes = it })
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = { onPickApp(newMinutes) },
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Icon(AppIcons.App, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("App wählen", fontSize = 13.sp, maxLines = 1)
+                    }
+                    OutlinedButton(
+                        onClick = { onPickWidget(newMinutes) },
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(1.dp, AppColors.BorderSubtle),
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Icon(AppIcons.Widget, contentDescription = null, tint = AppColors.AccentGold, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Widget wählen", fontSize = 13.sp, maxLines = 1)
+                    }
+                }
+            }
+        }
+
+        if (redirects.isEmpty()) {
+            item {
+                SectionCard {
+                    Text(
+                        "Noch keine Weiterleitungen oder Widgets eingerichtet.",
+                        fontSize = 14.sp,
+                        color = AppColors.TextSecondary,
+                    )
+                }
+            }
+        } else {
+            items(redirects, key = { it.id }) { task ->
+                val isActive = task.id in activeIds
+                val kindIcon = if (task.kind == GateTaskKind.WIDGET) AppIcons.Widget else AppIcons.App
+                val kindLabel = if (task.kind == GateTaskKind.WIDGET) "Widget" else "App-Weiterleitung"
+                SectionCard(highlighted = isActive, padding = PaddingValues(14.dp)) {
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Surface(shape = RoundedCornerShape(9.dp), color = AppColors.SurfaceCardAlt) {
+                            Icon(
+                                kindIcon,
+                                contentDescription = null,
+                                tint = AppColors.AccentGold,
+                                modifier = Modifier.padding(7.dp).size(18.dp),
+                            )
+                        }
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                task.text,
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = AppColors.TextPrimary,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                "$kindLabel · ${if (isActive) "Aktiv" else "Pausiert"}",
+                                fontSize = 12.sp,
+                                color = if (isActive) Good else AppColors.TextSecondary,
+                            )
+                        }
+                        Switch(
+                            checked = isActive,
+                            onCheckedChange = { checked ->
+                                val nextActive = if (checked) activeIds + task.id else activeIds - task.id
+                                persist(nextActive = nextActive)
+                            },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = AppColors.OnAccent,
+                                checkedTrackColor = AppColors.AccentGold,
+                            ),
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        DurationPickerRow(
+                            selectedMinutes = task.minutes,
+                            onSelect = { mins ->
+                                persist(nextTasks = tasks.map { if (it.id == task.id) it.copy(minutes = mins) else it })
+                            },
+                            modifier = Modifier.weight(1f),
+                        )
+                        if (isConfigurableWidget(task)) {
+                            IconButton(onClick = { onConfigureWidget(task) }, modifier = Modifier.size(36.dp)) {
+                                Icon(AppIcons.Settings, contentDescription = "Konfigurieren", tint = AppColors.TextPrimary, modifier = Modifier.size(18.dp))
+                            }
+                        }
+                        IconButton(onClick = { deleteCandidate = task }, modifier = Modifier.size(36.dp)) {
+                            Icon(AppIcons.Trash, contentDescription = "Löschen", tint = Bad, modifier = Modifier.size(18.dp))
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DurationPickerRow(
+    selectedMinutes: Int,
+    onSelect: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Row(modifier = modifier, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        (GateTask.MIN_MINUTES..GateTask.MAX_MINUTES).forEach { min ->
+            ChipButton(
+                label = "$min Min.",
+                selected = min == selectedMinutes,
+                onClick = { onSelect(min) },
+                modifier = Modifier.weight(1f),
+            )
+        }
+    }
+}
+
+/** Dedicated App-Sperre setup screen opened from the top-bar lock pill or Settings. */
+@Composable
+private fun ColumnScope.GateSettingsScreen(
+    store: Store,
+    overlayOn: Boolean,
+    gateOn: Boolean,
+    onApps: () -> Unit,
+    onBack: () -> Unit,
+) {
+    val context = LocalContext.current
+    var gateRelockMode by remember { mutableStateOf(store.gateRelockMode) }
+    var minutes by remember { mutableIntStateOf(store.unlockMinutes) }
+
+    SubScreenTopBar(title = "App-Sperre", onBack = onBack)
+
+    Column(
+        modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        if (overlayOn && gateOn) {
+            SectionCard(highlighted = true) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Icon(AppIcons.Lock, contentDescription = null, tint = Good, modifier = Modifier.size(20.dp))
+                    Column {
+                        Text("App-Sperre aktiv", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Good)
+                        Text("${store.blocked.size} App(s) werden beim Öffnen abgefangen.", fontSize = 12.sp, color = AppColors.TextSecondary)
+                    }
+                }
+            }
+        } else {
+            SectionCard(highlighted = true) {
+                Text("Berechtigungen einrichten", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = AppColors.TextPrimary)
                 PermissionRow(
                     title = "1. Über anderen Apps einblenden",
                     granted = overlayOn,
@@ -459,8 +1138,6 @@ private fun ColumnScope.GateSection(
                         )
                     },
                 )
-
-                // Step 2: Accessibility service — detects when a blocked app comes to the foreground.
                 PermissionRow(
                     title = "2. Bedienungshilfe aktivieren",
                     granted = gateOn,
@@ -469,12 +1146,11 @@ private fun ColumnScope.GateSection(
                         context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
                     },
                 )
-
                 if (!gateOn) {
                     Text(
                         "Falls ausgegraut (Android 13+): Erst App-Info öffnen → ⋮ oben rechts → „Eingeschränkte Einstellungen zulassen“.",
                         fontSize = 12.sp,
-                        color = Color.White.copy(alpha = 0.75f),
+                        color = AppColors.TextSecondary,
                     )
                     OutlinedButton(
                         onClick = {
@@ -485,6 +1161,7 @@ private fun ColumnScope.GateSection(
                                 )
                             )
                         },
+                        border = BorderStroke(1.dp, AppColors.BorderSubtle),
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Text("App-Info öffnen")
@@ -492,152 +1169,80 @@ private fun ColumnScope.GateSection(
                 }
             }
         }
-    }
 
-    OutlinedButton(onClick = onApps, modifier = Modifier.fillMaxWidth()) { Text("Gesperrte Apps wählen") }
-    val activeTaskCount = store.activeGateTasks().size
-    val poolSummary = when {
-        store.gateIncludeQuiz && activeTaskCount > 0 -> "Gehörbildung + $activeTaskCount Aufgabe(n)"
-        activeTaskCount > 0 -> "$activeTaskCount eigene Aufgabe(n)"
-        else -> "Nur Gehörbildung"
-    }
-    OutlinedButton(onClick = onTasks, modifier = Modifier.fillMaxWidth()) {
-        Text("Sperr-Aufgaben: $poolSummary")
-    }
-    Text("Modus der App-Sperre", fontSize = 14.sp)
-    RunPicker(
-        mode = gateMode,
-        selectedRunId = gateRunId,
-        runs = runs,
-        onSelectMode = {
-            gateMode = it
-            gateRunId = ""
-            store.gateMode = it
-            store.gateRunId = ""
-        },
-        onSelectRun = {
-            gateRunId = it.id
-            store.gateRunId = it.id
-        },
-    )
-    if (gateRunId.isEmpty()) {
-        val totalExercises = enabledExercises(gateMode, emptySet()).size
-        val enabledCount = enabledExercises(gateMode, store.gateDisabledExerciseIds).size
-        OutlinedButton(onClick = onExercises, modifier = Modifier.fillMaxWidth()) {
-            Text(
-                if (enabledCount == 0 || enabledCount == totalExercises) {
-                    "Abgefragte Aufgaben: alle $totalExercises"
-                } else {
-                    "Abgefragte Aufgaben: $enabledCount von $totalExercises"
-                }
+        SectionCard {
+            Text("Gesperrte Apps", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = AppColors.TextPrimary)
+            NavRow(
+                title = "Apps zum Sperren auswählen",
+                subtitle = "${store.blocked.size} App(s) ausgewählt",
+                onClick = onApps,
             )
         }
-    } else {
-        Text(
-            "Die App-Sperre fragt deinen eigenen Run ab (bearbeiten unter „Eigene Runs & Audios“).",
-            fontSize = 12.sp,
-            color = Color.White.copy(alpha = 0.72f),
-        )
-    }
-    Stepper("Wechselnde Aufgaben pro Sperre", gatePoolSize, 2..18) { gatePoolSize = it; store.gatePoolSize = it }
-    Text("Tonart pro Sperre", fontSize = 14.sp)
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        GateKeyMode.entries.forEach { option ->
-            val selected = option == gateKeyMode
-            Button(
-                onClick = { gateKeyMode = option; store.gateKeyMode = option },
-                shape = RoundedCornerShape(10.dp),
-                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
-                    contentColor = if (selected) MaterialTheme.colorScheme.onPrimary else Color.White,
-                ),
-                modifier = Modifier.weight(1f).height(38.dp),
-            ) {
-                Text(
-                    option.label,
-                    fontSize = 13.sp,
-                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                    maxLines = 1,
-                    softWrap = false,
-                )
+
+        SectionCard {
+            Text("Wieder sperren", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = AppColors.TextPrimary)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                GateRelockMode.entries.forEach { option ->
+                    ChipButton(
+                        label = option.label,
+                        selected = option == gateRelockMode,
+                        onClick = {
+                            gateRelockMode = option
+                            store.gateRelockMode = option
+                            // Clear stale unlocks when switching to stricter relock modes.
+                            if (option != GateRelockMode.TIMER) store.clearAllUnlocks()
+                        },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
             }
-        }
-    }
-    Text(
-        when (gateKeyMode) {
-            GateKeyMode.SINGLE_KEY_TONALITY -> "Nur eine Tonart (z. B. nur F-Dur oder nur F-Moll) – wechselt bei jedem Öffnen"
-            GateKeyMode.SAME_ROOT -> "Gleicher Grundton (z. B. F-Dur & F-Moll) – wechselt bei jedem Öffnen"
-            GateKeyMode.RANDOM -> "Jede Aufgabe in beliebiger Tonart (Dur & Moll gemischt)"
-        },
-        fontSize = 12.sp,
-        color = Color.White.copy(alpha = 0.72f),
-    )
-    Stepper("Richtige zum Öffnen", required, 1..20) { required = it; store.required = it }
-    Text("Wieder sperren", fontSize = 14.sp)
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        GateRelockMode.entries.forEach { option ->
-            val selected = option == gateRelockMode
-            Button(
-                onClick = {
-                    gateRelockMode = option
-                    store.gateRelockMode = option
-                    // Clear stale unlocks when switching to stricter relock modes.
-                    if (option != GateRelockMode.TIMER) store.clearAllUnlocks()
+            Text(
+                when (gateRelockMode) {
+                    GateRelockMode.TIMER -> "Bleibt nach dem Lösen für $minutes Min. offen"
+                    GateRelockMode.ON_SCREEN_OFF -> "Sperrt wieder, sobald du das Display ausschaltest"
+                    GateRelockMode.ON_APP_LEAVE -> "Sperrt sofort wieder, sobald du die App verlässt oder das Display ausschaltest"
                 },
-                shape = RoundedCornerShape(10.dp),
-                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
-                    contentColor = if (selected) MaterialTheme.colorScheme.onPrimary else Color.White,
-                ),
-                modifier = Modifier.weight(1f).height(38.dp),
-            ) {
-                Text(
-                    option.label,
-                    fontSize = 13.sp,
-                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                    maxLines = 1,
-                    softWrap = false,
-                )
+                fontSize = 12.sp,
+                color = AppColors.TextSecondary,
+            )
+            if (gateRelockMode == GateRelockMode.TIMER) {
+                Stepper("Minuten offen danach", minutes, 1..60) { minutes = it; store.unlockMinutes = it }
             }
         }
-    }
-    Text(
-        when (gateRelockMode) {
-            GateRelockMode.TIMER -> "Bleibt nach dem Lösen für $minutes Min. offen"
-            GateRelockMode.ON_SCREEN_OFF -> "Sperrt wieder, sobald du das Display ausschaltest"
-            GateRelockMode.ON_APP_LEAVE -> "Sperrt sofort wieder, sobald du die App verlässt oder das Display ausschaltest"
-        },
-        fontSize = 12.sp,
-        color = Color.White.copy(alpha = 0.72f),
-    )
-    if (gateRelockMode == GateRelockMode.TIMER) {
-        Stepper("Minuten offen danach", minutes, 1..60) { minutes = it; store.unlockMinutes = it }
     }
 }
 
 /**
  * Lets the user choose which chord progressions, cadences, chord types and inversions the app
- * gate asks. Each entry can be previewed with ▶; deselected IDs are stored as exclusions.
+ * gate asks. Shows the groups matching the built-in modes selected for the app gate.
  */
 @Composable
 private fun ColumnScope.GateExercisesScreen(store: Store, onExit: () -> Unit) {
-    var mode by remember { mutableStateOf(store.gateMode) }
+    val library = remember { Library(store) }
+    val selectedTarget = remember(store.gateSelection) { library.resolveSelection(store.gateSelection, store.gateMode) }
+    val activeModes = remember(selectedTarget) {
+        when (selectedTarget) {
+            is RunTarget.Builtin -> if (selectedTarget.mode == GameMode.MIX) GameMode.PLAYABLE else listOf(selectedTarget.mode)
+            is RunTarget.Combined -> selectedTarget.modes
+            is RunTarget.Custom -> GameMode.PLAYABLE
+        }
+    }
     var disabled by remember { mutableStateOf(store.gateDisabledExerciseIds) }
-    val groups = remember(mode) { builtinChecklistGroups(mode) }
+    val groups = remember(activeModes) { activeModes.flatMap { builtinChecklistGroups(it) } }
     val total = groups.sumOf { it.items.size }
     val enabledCount = groups.sumOf { g -> g.items.count { it.id !in disabled } }
 
-    Text("Abgefragte Aufgaben", fontSize = 26.sp, fontWeight = FontWeight.Bold)
+    SubScreenTopBar(
+        title = "Abgefragte Aufgaben",
+        onBack = { ChordPlayer.stop(); onExit() },
+    )
     Text(
         "Wähle, welche Akkordfolgen beim Öffnen einer gesperrten App drankommen. " +
             "Pro Sperre werden bis zu ${store.gatePoolSize} davon gezogen. ▶ spielt eine Hörprobe.",
-        fontSize = 13.sp,
-        color = Color.White.copy(alpha = 0.75f),
-        modifier = Modifier.padding(top = 4.dp, bottom = 10.dp),
+        fontSize = 12.sp,
+        color = AppColors.TextSecondary,
+        modifier = Modifier.padding(bottom = 6.dp),
     )
-    ModePicker(selected = mode, onSelect = { mode = it; store.gateMode = it })
     Text(
         if (enabledCount == 0) {
             "Nichts ausgewählt – dann werden alle $total abgefragt."
@@ -645,8 +1250,9 @@ private fun ColumnScope.GateExercisesScreen(store: Store, onExit: () -> Unit) {
             "$enabledCount von $total ausgewählt"
         },
         fontSize = 13.sp,
-        color = if (enabledCount == 0) Bad else MaterialTheme.colorScheme.primary,
-        modifier = Modifier.padding(vertical = 8.dp),
+        fontWeight = FontWeight.SemiBold,
+        color = if (enabledCount == 0) Bad else AppColors.AccentGold,
+        modifier = Modifier.padding(bottom = 8.dp),
     )
     ItemChecklist(
         groups = groups,
@@ -657,7 +1263,10 @@ private fun ColumnScope.GateExercisesScreen(store: Store, onExit: () -> Unit) {
         },
         modifier = Modifier.weight(1f),
     )
-    Button(onClick = { ChordPlayer.stop(); onExit() }, modifier = Modifier.fillMaxWidth()) { Text("Fertig") }
+    Button(
+        onClick = { ChordPlayer.stop(); onExit() },
+        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+    ) { Text("Fertig") }
 }
 
 @Composable
@@ -678,9 +1287,11 @@ private fun PermissionRow(
             fontSize = 18.sp,
             fontWeight = FontWeight.Bold,
         )
-        Text(title, Modifier.weight(1f), fontSize = 14.sp)
+        Text(title, Modifier.weight(1f), fontSize = 14.sp, color = AppColors.TextPrimary)
         if (!granted) {
-            Button(onClick = onAction) { Text(actionLabel, fontSize = 13.sp) }
+            Button(onClick = onAction, contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)) {
+                Text(actionLabel, fontSize = 13.sp)
+            }
         }
     }
 }
@@ -734,7 +1345,7 @@ private fun ColumnScope.Apps(store: Store, onExit: () -> Unit) {
     // Reset scroll to the top match whenever the search query changes so LazyColumn doesn't jump to anchored items.
     LaunchedEffect(query) { listState.scrollToItem(0) }
 
-    Text("Gesperrte Apps", fontSize = 26.sp, fontWeight = FontWeight.Bold)
+    SubScreenTopBar(title = "Gesperrte Apps (${blocked.size})", onBack = onExit)
     OutlinedTextField(
         value = query,
         onValueChange = { query = it },
@@ -745,313 +1356,39 @@ private fun ColumnScope.Apps(store: Store, onExit: () -> Unit) {
         } else {
             null
         },
-        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+        modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
     )
-    LazyColumn(state = listState, modifier = Modifier.weight(1f)) {
+    LazyColumn(state = listState, modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         if (filtered.isEmpty()) {
             item {
                 Text(
                     "Keine App gefunden",
-                    color = Color.White.copy(alpha = 0.65f),
+                    color = AppColors.TextSecondary,
                     modifier = Modifier.padding(vertical = 16.dp),
                 )
             }
         }
         items(filtered, key = { it.pkg }) { app ->
+            val checked = app.pkg in blocked
             val toggle = {
-                blocked = if (app.pkg in blocked) blocked - app.pkg else blocked + app.pkg
+                blocked = if (checked) blocked - app.pkg else blocked + app.pkg
                 store.blocked = blocked
             }
-            Row(
-                Modifier.fillMaxWidth().clickable(onClick = toggle),
-                verticalAlignment = Alignment.CenterVertically,
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .clickable(onClick = toggle),
+                shape = RoundedCornerShape(10.dp),
+                color = if (checked) AppColors.AccentGoldSoft else AppColors.SurfaceCard,
+                border = BorderStroke(1.dp, if (checked) AppColors.AccentGold.copy(alpha = 0.5f) else AppColors.BorderSubtle),
             ) {
-                Checkbox(checked = app.pkg in blocked, onCheckedChange = { toggle() })
-                Text(app.label)
-            }
-        }
-    }
-    Button(onClick = onExit, modifier = Modifier.fillMaxWidth()) { Text("Fertig") }
-}
-
-/**
- * Submenu to create timed text tasks, app redirects, or configured widgets (1..3 min) and
- * move them into or out of the active app-gate rotation field. By default only the ear-training
- * quiz is active; adding custom entries makes the gate alternate between all active entries.
- */
-@Composable
-private fun ColumnScope.GateTasksScreen(
-    store: Store,
-    revision: Int,
-    onPickApp: (minutes: Int) -> Unit,
-    onPickWidget: (minutes: Int, customLabel: String) -> Unit,
-    onConfigureWidget: (GateTask) -> Unit,
-    onDeleteWidget: (widgetId: Int) -> Unit,
-    onExit: () -> Unit,
-) {
-    val context = LocalContext.current
-    val widgetManager = remember(context) { AppWidgetManager.getInstance(context) }
-    var tasks by remember(revision) { mutableStateOf(store.gateTasks) }
-    var activeIds by remember(revision) { mutableStateOf(store.gateActiveTaskIds) }
-    var includeQuiz by remember(revision) { mutableStateOf(store.gateIncludeQuiz) }
-    var newText by remember { mutableStateOf("") }
-    var newMinutes by remember { mutableIntStateOf(1) }
-
-    val activeTasks = tasks.filter { it.id in activeIds }
-    val inactiveTasks = tasks.filter { it.id !in activeIds }
-    val totalActiveCount = (if (includeQuiz) 1 else 0) + activeTasks.size
-
-    fun taskKindBadge(task: GateTask): String = when (task.kind) {
-        GateTaskKind.TEXT -> "📝 ${task.minutes} Min. · Text-Aufgabe"
-        GateTaskKind.APP -> "📱 ${task.minutes} Min. · App-Weiterleitung"
-        GateTaskKind.WIDGET -> "🧩 ${task.minutes} Min. · Widget"
-    }
-
-    fun isConfigurableWidget(task: GateTask): Boolean =
-        task.kind == GateTaskKind.WIDGET &&
-            task.widgetId != AppWidgetManager.INVALID_APPWIDGET_ID &&
-            widgetManager.getAppWidgetInfo(task.widgetId)?.configure != null
-
-    fun persist(nextTasks: List<GateTask> = tasks, nextActive: Set<String> = activeIds, nextQuiz: Boolean = includeQuiz) {
-        val validIds = nextTasks.map { it.id }.toSet()
-        val cleanedActive = nextActive.intersect(validIds)
-        // Always keep at least one active entry (fall back to ear-training if all tasks are removed).
-        val safeQuiz = if (cleanedActive.isEmpty()) true else nextQuiz
-        tasks = nextTasks
-        activeIds = cleanedActive
-        includeQuiz = safeQuiz
-        store.gateTasks = nextTasks
-        store.gateActiveTaskIds = cleanedActive
-        store.gateIncludeQuiz = safeQuiz
-    }
-
-    fun cycleMinutes(task: GateTask) {
-        val nextMin = if (task.minutes >= GateTask.MAX_MINUTES) GateTask.MIN_MINUTES else task.minutes + 1
-        persist(nextTasks = tasks.map { if (it.id == task.id) it.copy(minutes = nextMin) else it })
-    }
-
-    fun deleteTask(task: GateTask) {
-        if (task.kind == GateTaskKind.WIDGET) onDeleteWidget(task.widgetId)
-        persist(nextTasks = tasks.filterNot { it.id == task.id })
-    }
-
-    Text("Sperr-Aufgaben", fontSize = 26.sp, fontWeight = FontWeight.Bold)
-    Text(
-        "Erstelle Text-Aufgaben, App-Weiterleitungen oder Widgets (1–3 Min.) – Dauer per Tipp anpassbar.",
-        fontSize = 13.sp,
-        color = Color.White.copy(alpha = 0.75f),
-        modifier = Modifier.padding(top = 4.dp, bottom = 10.dp),
-    )
-
-    LazyColumn(
-        Modifier.weight(1f),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        // Active rotation field (defaults to only ear-training).
-        item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(14.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-            ) {
-                Column(
-                    Modifier.fillMaxWidth().padding(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Text(
-                        "Aktiv in der Sperre ($totalActiveCount)",
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
-                    if (includeQuiz) {
-                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                            Text("🎵 Gehörbildung (aktueller Modus)", Modifier.weight(1f), fontSize = 14.sp)
-                            if (totalActiveCount > 1) {
-                                TextButton(
-                                    onClick = { persist(nextQuiz = false) },
-                                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
-                                    modifier = Modifier.defaultMinSize(minWidth = 1.dp, minHeight = 36.dp),
-                                ) { Text("Raus", fontSize = 13.sp) }
-                            }
-                        }
-                    }
-                    activeTasks.forEach { task ->
-                        Row(
-                            Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(2.dp),
-                        ) {
-                            Column(Modifier.weight(1f)) {
-                                Text(
-                                    task.text,
-                                    fontSize = 14.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                                Text(
-                                    "${taskKindBadge(task)} ↻",
-                                    fontSize = 12.sp,
-                                    color = Good,
-                                    modifier = Modifier.clickable { cycleMinutes(task) },
-                                )
-                            }
-                            if (isConfigurableWidget(task)) {
-                                TextButton(
-                                    onClick = { onConfigureWidget(task) },
-                                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
-                                    modifier = Modifier.defaultMinSize(minWidth = 1.dp, minHeight = 36.dp),
-                                ) { Text("⚙", fontSize = 16.sp) }
-                            }
-                            TextButton(
-                                onClick = { persist(nextActive = activeIds - task.id) },
-                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
-                                modifier = Modifier.defaultMinSize(minWidth = 1.dp, minHeight = 36.dp),
-                            ) { Text("Raus", fontSize = 13.sp) }
-                            TextButton(
-                                onClick = { deleteTask(task) },
-                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
-                                modifier = Modifier.defaultMinSize(minWidth = 1.dp, minHeight = 36.dp),
-                            ) { Text("×", color = Bad, fontSize = 18.sp) }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Create a new 1..3 min task (Text, App redirect, or configured Widget).
-        item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(14.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-            ) {
-                Column(
-                    Modifier.fillMaxWidth().padding(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Text("Neu hinzufügen (1–3 Min.)", fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        (GateTask.MIN_MINUTES..GateTask.MAX_MINUTES).forEach { min ->
-                            val selected = min == newMinutes
-                            Button(
-                                onClick = { newMinutes = min },
-                                shape = RoundedCornerShape(10.dp),
-                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.background,
-                                    contentColor = if (selected) MaterialTheme.colorScheme.onPrimary else Color.White,
-                                ),
-                                modifier = Modifier.weight(1f).height(36.dp),
-                            ) {
-                                Text("$min Min.", fontSize = 13.sp, fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium)
-                            }
-                        }
-                    }
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        OutlinedButton(
-                            onClick = { onPickApp(newMinutes) },
-                            modifier = Modifier.weight(1f),
-                        ) {
-                            Text("📱 + App", fontSize = 13.sp, maxLines = 1)
-                        }
-                        OutlinedButton(
-                            onClick = {
-                                val label = newText.trim()
-                                newText = ""
-                                onPickWidget(newMinutes, label)
-                            },
-                            modifier = Modifier.weight(1f),
-                        ) {
-                            Text("🧩 + Widget", fontSize = 13.sp, maxLines = 1)
-                        }
-                    }
-                    OutlinedTextField(
-                        value = newText,
-                        onValueChange = { newText = it },
-                        placeholder = { Text("Text-Aufgabe (oder optional Widget-Name)…") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    Button(
-                        onClick = {
-                            val trimmed = newText.trim()
-                            if (trimmed.isNotEmpty()) {
-                                val created = GateTask(
-                                    id = "t_${System.currentTimeMillis()}_${tasks.size}",
-                                    text = trimmed,
-                                    minutes = newMinutes,
-                                )
-                                persist(nextTasks = tasks + created, nextActive = activeIds + created.id)
-                                newText = ""
-                            }
-                        },
-                        enabled = newText.isNotBlank(),
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text("📝 + Text-Aufgabe speichern")
-                    }
-                }
-            }
-        }
-
-        // Available items that can be moved into the active field.
-        if (!includeQuiz || inactiveTasks.isNotEmpty()) {
-            item {
-                Text(
-                    "Verfügbar (pausiert)",
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.padding(top = 4.dp),
-                )
-            }
-            if (!includeQuiz) {
-                item(key = GateChallenge.QUIZ_ID) {
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        Text("🎵 Gehörbildung (aktueller Modus)", Modifier.weight(1f), fontSize = 14.sp)
-                        Button(onClick = { persist(nextQuiz = true) }) { Text("+ Aktiv", fontSize = 13.sp) }
-                    }
-                }
-            }
-            items(inactiveTasks, key = { it.id }) { task ->
                 Row(
-                    Modifier.fillMaxWidth(),
+                    Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 2.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    Column(Modifier.weight(1f)) {
-                        Text(
-                            task.text,
-                            fontSize = 14.sp,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        Text(
-                            "${taskKindBadge(task)} ↻",
-                            fontSize = 12.sp,
-                            color = Color.White.copy(alpha = 0.7f),
-                            modifier = Modifier.clickable { cycleMinutes(task) },
-                        )
-                    }
-                    if (isConfigurableWidget(task)) {
-                        TextButton(
-                            onClick = { onConfigureWidget(task) },
-                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
-                            modifier = Modifier.defaultMinSize(minWidth = 1.dp, minHeight = 36.dp),
-                        ) { Text("⚙", fontSize = 16.sp) }
-                    }
-                    Button(
-                        onClick = { persist(nextActive = activeIds + task.id) },
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                    ) { Text("+ Aktiv", fontSize = 13.sp) }
-                    TextButton(
-                        onClick = { deleteTask(task) },
-                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
-                        modifier = Modifier.defaultMinSize(minWidth = 1.dp, minHeight = 36.dp),
-                    ) {
-                        Text("×", color = Bad, fontSize = 18.sp)
-                    }
+                    Checkbox(checked = checked, onCheckedChange = { toggle() })
+                    Text(app.label, color = AppColors.TextPrimary, fontSize = 15.sp)
                 }
             }
         }
@@ -1077,7 +1414,7 @@ private fun ColumnScope.RedirectAppPicker(
     }
     LaunchedEffect(query) { listState.scrollToItem(0) }
 
-    Text("App zum Üben ($minutes Min.)", fontSize = 24.sp, fontWeight = FontWeight.Bold)
+    SubScreenTopBar(title = "App zum Üben ($minutes Min.)", onBack = onCancel)
     OutlinedTextField(
         value = query,
         onValueChange = { query = it },
@@ -1088,32 +1425,43 @@ private fun ColumnScope.RedirectAppPicker(
         } else {
             null
         },
-        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+        modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
     )
-    LazyColumn(state = listState, modifier = Modifier.weight(1f)) {
+    LazyColumn(state = listState, modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         if (filtered.isEmpty()) {
             item {
                 Text(
                     "Keine App gefunden",
-                    color = Color.White.copy(alpha = 0.65f),
+                    color = AppColors.TextSecondary,
                     modifier = Modifier.padding(vertical = 16.dp),
                 )
             }
         }
         items(filtered, key = { it.pkg }) { app ->
-            Row(
-                Modifier
+            Surface(
+                modifier = Modifier
                     .fillMaxWidth()
-                    .clickable { onPick(app) }
-                    .padding(vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
+                    .clip(RoundedCornerShape(12.dp))
+                    .clickable { onPick(app) },
+                shape = RoundedCornerShape(12.dp),
+                color = AppColors.SurfaceCard,
+                border = BorderStroke(1.dp, AppColors.BorderSubtle),
             ) {
-                Text(app.label, fontSize = 16.sp, modifier = Modifier.weight(1f))
-                Text("$minutes Min. →", fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(app.label, fontSize = 15.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+                    Text("$minutes Min. →", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = AppColors.AccentGold)
+                }
             }
         }
     }
-    OutlinedButton(onClick = onCancel, modifier = Modifier.fillMaxWidth()) { Text("Abbrechen") }
+    OutlinedButton(
+        onClick = onCancel,
+        border = BorderStroke(1.dp, AppColors.BorderSubtle),
+        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+    ) { Text("Abbrechen") }
 }
 
 /**
@@ -1125,11 +1473,12 @@ private fun ColumnScope.RedirectAppPicker(
 private fun ColumnScope.WidgetPicker(
     minutes: Int,
     errorMessage: String?,
-    onPick: (WidgetProviderEntry) -> Unit,
+    onPick: (WidgetProviderEntry, customLabel: String) -> Unit,
     onCancel: () -> Unit,
 ) {
     val context = LocalContext.current
     var query by remember { mutableStateOf("") }
+    var customLabel by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
     val entries = remember {
         val pm = context.packageManager
@@ -1164,15 +1513,23 @@ private fun ColumnScope.WidgetPicker(
     }
     LaunchedEffect(query) { listState.scrollToItem(0) }
 
-    Text("Widget wählen ($minutes Min.)", fontSize = 24.sp, fontWeight = FontWeight.Bold)
+    SubScreenTopBar(title = "Widget wählen ($minutes Min.)", onBack = onCancel)
     if (!errorMessage.isNullOrBlank()) {
         Text(
             errorMessage,
             fontSize = 13.sp,
             color = Bad,
-            modifier = Modifier.padding(top = 4.dp),
+            modifier = Modifier.padding(bottom = 6.dp),
         )
     }
+    OutlinedTextField(
+        value = customLabel,
+        onValueChange = { customLabel = it },
+        label = { Text("Eigener Name (optional)") },
+        placeholder = { Text("z. B. Widder · Akkorde") },
+        singleLine = true,
+        modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+    )
     OutlinedTextField(
         value = query,
         onValueChange = { query = it },
@@ -1183,46 +1540,57 @@ private fun ColumnScope.WidgetPicker(
         } else {
             null
         },
-        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+        modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
     )
-    LazyColumn(state = listState, modifier = Modifier.weight(1f)) {
+    LazyColumn(state = listState, modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         if (filtered.isEmpty()) {
             item {
                 Text(
                     "Kein Widget gefunden",
-                    color = Color.White.copy(alpha = 0.65f),
+                    color = AppColors.TextSecondary,
                     modifier = Modifier.padding(vertical = 16.dp),
                 )
             }
         }
         items(filtered, key = { it.key }) { entry ->
-            Row(
-                Modifier
+            Surface(
+                modifier = Modifier
                     .fillMaxWidth()
-                    .clickable { onPick(entry) }
-                    .padding(vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    .clip(RoundedCornerShape(12.dp))
+                    .clickable { onPick(entry, customLabel.trim()) },
+                shape = RoundedCornerShape(12.dp),
+                color = AppColors.SurfaceCard,
+                border = BorderStroke(1.dp, AppColors.BorderSubtle),
             ) {
-                Column(Modifier.weight(1f)) {
-                    Text(entry.appName, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(entry.appName, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = AppColors.TextPrimary)
+                        Text(
+                            entry.widgetLabel,
+                            fontSize = 13.sp,
+                            color = AppColors.TextSecondary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                     Text(
-                        entry.widgetLabel,
-                        fontSize = 13.sp,
-                        color = Color.White.copy(alpha = 0.72f),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
+                        if (entry.configurable) "⚙ Konfigurierbar" else "Direkt",
+                        fontSize = 12.sp,
+                        color = if (entry.configurable) AppColors.AccentGold else AppColors.TextSecondary,
                     )
                 }
-                Text(
-                    if (entry.configurable) "⚙ Konfigurierbar" else "Direkt",
-                    fontSize = 12.sp,
-                    color = if (entry.configurable) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.65f),
-                )
             }
         }
     }
-    OutlinedButton(onClick = onCancel, modifier = Modifier.fillMaxWidth()) { Text("Abbrechen") }
+    OutlinedButton(
+        onClick = onCancel,
+        border = BorderStroke(1.dp, AppColors.BorderSubtle),
+        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+    ) { Text("Abbrechen") }
 }
 
 private fun gateEnabled(context: Context): Boolean {
