@@ -163,6 +163,44 @@ val ALL_EXERCISES: List<Exercise> = GameMode.PLAYABLE.flatMap { EXERCISES_BY_MOD
 
 private val EXERCISE_BY_ID: Map<String, Exercise> = ALL_EXERCISES.associateBy { it.id }
 
+/** Short user-facing label of an exercise, matching its answer button (e.g. `I → V`, `maj7`). */
+val Exercise.displayLabel: String
+    get() = when (this) {
+        is Progression -> "${tonic.label} → ${target.label}"
+        is ChordTypeExercise -> type.label
+        is Cadence -> choiceLabel
+        is InversionExercise -> choiceLabel
+    }
+
+/** A titled block of exercises for the app-gate exercise selection (e.g. "Stufen · Dur"). */
+data class ExerciseGroup(val title: String, val exercises: List<Exercise>)
+
+/** Groups the exercises of [mode] (all four modes for [GameMode.MIX]) for the selection screen. */
+fun exerciseGroups(mode: GameMode): List<ExerciseGroup> {
+    val modes = if (mode == GameMode.MIX) GameMode.PLAYABLE else listOf(mode)
+    return modes.flatMap { m ->
+        when (m) {
+            GameMode.DEGREES -> listOf(
+                ExerciseGroup("Stufen · Dur", ALL_PROGRESSIONS.filter { !it.minor }),
+                ExerciseGroup("Stufen · Moll", ALL_PROGRESSIONS.filter { it.minor }),
+            )
+            GameMode.CADENCES -> listOf(
+                ExerciseGroup("Kadenzen · Dur", MAJOR_CADENCES),
+                ExerciseGroup("Kadenzen · Moll", MINOR_CADENCES),
+            )
+            GameMode.CHORD_TYPES -> listOf(ExerciseGroup("Akkordtypen", CHORD_TYPE_EXERCISES))
+            GameMode.INVERSIONS -> listOf(ExerciseGroup("Umkehrungen", INVERSION_EXERCISES))
+            GameMode.MIX -> emptyList()
+        }
+    }
+}
+
+/** Exercises of [mode] (all for [GameMode.MIX]) that are not in [disabledIds]. */
+fun enabledExercises(mode: GameMode, disabledIds: Set<String>): List<Exercise> {
+    val source = if (mode == GameMode.MIX) ALL_EXERCISES else EXERCISES_BY_MODE.getValue(mode)
+    return source.filter { it.id !in disabledIds }
+}
+
 /** Human-readable chord metadata for Check mode (guitar double-check). */
 data class ChordInfo(
     val name: String,
@@ -273,8 +311,17 @@ class Question(
     val mode: GameMode,
     val prompt: String,
     val chordInfos: List<ChordInfo>,
+    /** Set for a user-uploaded recording: it is played instead of the synthesized [chords]. */
+    val audioPath: String? = null,
 ) {
     val chordSummary: String get() = chordInfos.joinToString(" → ") { it.name }
+
+    val isAudio: Boolean get() = audioPath != null
+
+    /** Plays the question: the uploaded recording or the synthesized chords. */
+    fun play() {
+        if (audioPath != null) ChordPlayer.playFile(audioPath) else ChordPlayer.play(chords)
+    }
 }
 
 object QuestionFactory {
@@ -439,6 +486,8 @@ class ReviewQueue(initial: List<Entry> = emptyList()) {
     /** Records an answer for [progressionId] within [mode], updating due counters and graduation state. */
     fun record(progressionId: String, correct: Boolean, mode: GameMode = GameMode.MIX) {
         lastId = progressionId
+        // Uploaded recordings live outside the built-in catalog and have their own retry logic.
+        if (progressionId !in EXERCISE_BY_ID) return
         for (i in entries.indices) {
             val e = entries[i]
             if (e.id != progressionId && e.due > 0 && matches(e.id, mode)) {
@@ -518,13 +567,21 @@ enum class GateRelockMode(val key: String, val label: String) {
  * unlock session so the user can recognize and learn them by ear/memory rather than guessing
  * from the full catalog. Exercises repeat in freshly reshuffled bags whose order changes on
  * every cycle and never repeats the same exercise back-to-back, preventing position memorization.
+ *
+ * Exercises in [disabledIds] (deselected by the user, e.g. only `I → IV` and `I → V` wanted) are
+ * never asked; if that would leave nothing to ask, the full catalog of [mode] is used instead.
  */
 class GateSessionDeck(
     val mode: GameMode,
     maxPoolSize: Int = DEFAULT_POOL_SIZE,
     val keyMode: GateKeyMode = GateKeyMode.SINGLE_KEY_TONALITY,
     private val rnd: Random = Random,
+    disabledIds: Set<String> = emptySet(),
 ) {
+    /** Exercises the user allowed for [mode] (falls back to all of them if none are left). */
+    private val enabled: List<Exercise> =
+        enabledExercises(mode, disabledIds).ifEmpty { enabledExercises(mode, emptySet()) }
+
     /** Fixed subset of distinct exercises active for this single app-start challenge. */
     val pool: List<Exercise>
 
@@ -537,8 +594,20 @@ class GateSessionDeck(
     /**
      * When [keyMode] is [GateKeyMode.SINGLE_KEY_TONALITY], locks the session to either only
      * major (`false`) or only minor (`true`) progressions/cadences; changes on every new app opening.
+     * Only tonalities that still have selected progressions/cadences are drawn.
      */
-    val sessionMinor: Boolean? = if (keyMode == GateKeyMode.SINGLE_KEY_TONALITY) rnd.nextBoolean() else null
+    val sessionMinor: Boolean? = if (keyMode == GateKeyMode.SINGLE_KEY_TONALITY) {
+        val tonalities = enabled.mapNotNullTo(HashSet()) { ex ->
+            when (ex) {
+                is Progression -> ex.minor
+                is Cadence -> ex.minor
+                is ChordTypeExercise, is InversionExercise -> null
+            }
+        }
+        if (tonalities.size == 1) tonalities.first() else rnd.nextBoolean()
+    } else {
+        null
+    }
 
     private val bag = ArrayDeque<Exercise>()
     private var lastId: String? = null
@@ -546,7 +615,7 @@ class GateSessionDeck(
 
     init {
         require(maxPoolSize >= 1) { "maxPoolSize must be >= 1, was $maxPoolSize" }
-        val source = if (mode == GameMode.MIX) ALL_EXERCISES else EXERCISES_BY_MODE.getValue(mode)
+        val source = enabled
         val filtered = if (sessionMinor != null) {
             source.filter { ex ->
                 when (ex) {
@@ -827,13 +896,21 @@ object AppSearch {
 /** Renders chords to 16-bit mono PCM with a small piano-like additive synth. */
 object Synth {
     const val RATE = 44100
-    private const val FIRST_SEC = 0.55
-    private const val LAST_SEC = 1.1
+    const val DEFAULT_CHORD_MS = 550
+
+    /**
+     * How long each chord of a progression sounds (user setting, default 0.55 s). The last chord
+     * rings out twice as long so the resolution can be heard.
+     */
+    @kotlin.concurrent.Volatile
+    var chordMs: Int = DEFAULT_CHORD_MS
+
+    private val chordSec: Double get() = chordMs / 1000.0
     private const val ARP_STEP_SEC = 0.08
 
     fun render(chords: List<List<Int>>): ShortArray {
         val counts = chords.indices.map {
-            ((if (it == chords.lastIndex) LAST_SEC else FIRST_SEC) * RATE).toInt()
+            ((if (it == chords.lastIndex) 2 * chordSec else chordSec) * RATE).toInt()
         }
         val mix = FloatArray(counts.sum())
         var offset = 0
@@ -848,7 +925,9 @@ object Synth {
     /** Renders each chord rolled upward note by note so dense voicings are easier to dissect. */
     fun renderArpeggiated(chords: List<List<Int>>): ShortArray {
         val counts = chords.mapIndexed { i, notes ->
-            val tail = if (i == chords.lastIndex) 0.85 else 0.45
+            // Tails scale with the chord duration (0.45 s / 0.85 s at the default 0.55 s).
+            val scale = chordSec / (DEFAULT_CHORD_MS / 1000.0)
+            val tail = (if (i == chords.lastIndex) 0.85 else 0.45) * scale
             val duration = notes.size * ARP_STEP_SEC + tail
             (duration * RATE).toInt()
         }
@@ -895,6 +974,9 @@ object Synth {
 expect object ChordPlayer {
     fun play(chords: List<List<Int>>)
     fun playArpeggiated(chords: List<List<Int>>)
+
+    /** Plays a user-uploaded audio file from local app storage; unsupported files stay silent. */
+    fun playFile(path: String)
     fun stop()
 }
 
@@ -926,4 +1008,10 @@ interface Scores {
 
     fun highScore(mode: GameMode): Int
     fun setHighScore(mode: GameMode, value: Int)
+
+    /** Generic key/value access so shared code can persist new settings without per-platform glue. */
+    fun getInt(key: String, default: Int): Int
+    fun putInt(key: String, value: Int)
+    fun getString(key: String, default: String): String
+    fun putString(key: String, value: String)
 }

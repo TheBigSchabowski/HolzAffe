@@ -6,7 +6,8 @@ ein paar Aufgaben richtig erkannt hast.
 
 ## Das Spiel
 
-- **1:30 Zeit** im Puzzle-Rush-Format, mit **♪ Zerlegt** (Arpeggio) und **⏸ Check** (Check-Modus).
+- **Einstellbare Run-Länge** (Standard 1:30, von 0:15 bis 10:00) im Puzzle-Rush-Format, mit **♪ Zerlegt**
+  (Arpeggio) und **⏸ Check** (Check-Modus). Bestwerte werden pro Modus bzw. Run *und* Länge gespeichert.
 - **Check-Modus (`⏸ Check`)**: Hält die Zeit im Run an, zeigt sowohl die Stufe (z. B. `I → ♭VII`) als auch
   die konkreten Akkordnamen in der gespielten Tonart (z. B. `G-Dur → F-Dur`) samt Einzeltönen und lässt
   jeden Akkord einzeln zum Doppelchecken (z. B. auf der Gitarre) abspielen.
@@ -16,6 +17,13 @@ ein paar Aufgaben richtig erkannt hast.
   - **Kadenzen**: typische 3-Akkord-Verbindungen in Dur und Moll (z. B. `I → IV → V`, `i → VI → VII`).
   - **Umkehrungen**: `Dur`, `Moll` und `dim` jeweils in Grundstellung, 1. und 2. Umkehrung (auf einheitlicher Basshöhe).
   - **Mix**: mischt alle vier Modi gleichmäßig.
+- **Akkord-Dauer** einstellbar (Standard 0,55 s, von 0,20 s bis 3,00 s; der letzte Akkord klingt doppelt
+  so lang aus), mit ▶ zum Probehören. Gilt für Runs, Check-Modus und die App-Sperre.
+- **Eigene Runs & Audios**: Unter **Eigene Runs & Audios** lädst du eigene Aufnahmen hoch (Android: MP3,
+  M4A, WAV, OGG …; Desktop: WAV/AIFF) und benennst sie direkt in der App. Daraus und aus beliebigen
+  Stufen, Kadenzen, Akkordtypen und Umkehrungen stellst du eigene Runs zusammen, die neben den fünf
+  Modi als ★-Run auswählbar sind. Bei einem Audio wählst du den richtigen Namen; die anderen Aufnahmen
+  dienen als falsche Antworten. Verpasste Aufgaben kommen im Run kurz danach wieder.
 - **Fehler-Wiederholung**: Falsch beantwortete Aufgaben kehren nach kurzem Abstand automatisch zurück
   (auch über Runs, die App-Sperre und Neustarts hinweg), bis sie zweimal sicher sitzen.
 - Gespeichert werden das **All-time High** pro Modus, die **aktuelle Serie**
@@ -31,6 +39,13 @@ ständig wechselnder Reihenfolge wiederholen – standardmäßig in **einer fest
 nur Moll, z. B. nur F-Dur), die erst beim nächsten Öffnen wechselt (alternativ: gleicher Grundton mit
 Dur+Moll oder komplettes Wirrwarr). Die **Fehler-Anzeigedauer** (Rot/Grün nach falscher Antwort) ist
 einstellbar (Standard 3 Sekunden).
+
+Statt eines Modus kann die App-Sperre auch einen **eigenen Run** abfragen (inkl. eigener Audios).
+Unter **Abgefragte Aufgaben** legst du fest, welche Akkordfolgen (bzw. Kadenzen, Akkordtypen und
+Umkehrungen) beim Öffnen überhaupt drankommen, z. B. nur `I → IV`, `I → V` und `I → vi`. Jede Gruppe
+lässt sich per **Alle**/**Keine** umschalten, und ▶ spielt eine Hörprobe. Die Tonart-Einstellung
+richtet sich danach: Sind nur Dur-Folgen ausgewählt, bleibt die Sperre auch in Dur. Ist nichts
+ausgewählt, wird wieder alles abgefragt.
 
 Zusätzlich lassen sich unter **Sperr-Aufgaben** eigene **Text-Aufgaben**, **App-Weiterleitungen**
 (z. B. erst 1–3 Min. Widder, Anki oder Duolingo üben, mit schwebendem Countdown) sowie **konfigurierte

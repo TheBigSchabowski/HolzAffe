@@ -9,6 +9,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
+import java.awt.FileDialog
+import java.awt.Frame
+import java.io.File
+import java.util.UUID
 import java.util.prefs.Preferences
 
 /** High score and settings in the user's Java preferences. */
@@ -44,10 +48,49 @@ private class DesktopScores : Scores {
 
     private fun highScoreKey(mode: GameMode): String =
         if (mode == GameMode.DEGREES) "highScore" else "highScore:${mode.key}"
+
+    override fun getInt(key: String, default: Int): Int = prefs.getInt(key, default)
+    override fun putInt(key: String, value: Int) = prefs.putInt(key, value)
+    override fun getString(key: String, default: String): String = prefs.get(key, default)
+    override fun putString(key: String, value: String) = prefs.put(key, value)
+}
+
+/** Copies picked recordings into the per-user data folder (macOS Application Support, Linux XDG). */
+private class DesktopAudioStorage : AudioStorage {
+    private val dir: File by lazy {
+        val home = System.getProperty("user.home")
+        val base = if (System.getProperty("os.name").orEmpty().lowercase().contains("mac")) {
+            File(home, "Library/Application Support/HolzAffe")
+        } else {
+            File(System.getenv("XDG_DATA_HOME")?.takeIf { it.isNotBlank() } ?: "$home/.local/share", "holzaffe")
+        }
+        File(base, "audio").apply { mkdirs() }
+    }
+
+    override val formatsHint = "Am Computer spielen WAV- und AIFF-Dateien."
+
+    override fun pick(onPicked: (ImportedAudio?) -> Unit) {
+        val dialog = FileDialog(null as Frame?, "Audio auswählen", FileDialog.LOAD)
+        dialog.isVisible = true // modal
+        val name = dialog.file ?: return onPicked(null)
+        val source = File(dialog.directory, name)
+        val imported = runCatching {
+            val ext = source.extension.lowercase().ifEmpty { "wav" }
+            val target = File(dir, "${UUID.randomUUID()}.$ext")
+            source.copyTo(target)
+            ImportedAudio(target.absolutePath, source.nameWithoutExtension)
+        }.getOrNull()
+        onPicked(imported)
+    }
+
+    override fun delete(path: String) {
+        runCatching { File(path).takeIf { it.parentFile == dir }?.delete() }
+    }
 }
 
 fun main() = application {
     val scores = DesktopScores()
+    val audioStorage = DesktopAudioStorage()
     Window(
         onCloseRequest = ::exitApplication,
         title = "HolzAffe",
@@ -55,7 +98,7 @@ fun main() = application {
     ) {
         AppTheme {
             Surface(Modifier.fillMaxSize()) {
-                Box(Modifier.padding(24.dp)) { GameApp(scores) }
+                Box(Modifier.padding(24.dp)) { GameApp(scores, audioStorage = audioStorage) }
             }
         }
     }

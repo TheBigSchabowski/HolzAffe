@@ -10,6 +10,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.OpenableColumns
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -60,8 +61,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.LifecycleResumeEffect
+import java.io.File
+import java.util.UUID
 
-private enum class MainScreen { HOME, APPS, TASKS, PICK_REDIRECT_APP, PICK_WIDGET }
+private enum class MainScreen { HOME, APPS, TASKS, EXERCISES, PICK_REDIRECT_APP, PICK_WIDGET }
 
 class MainActivity : ComponentActivity() {
     private lateinit var store: Store
@@ -79,6 +82,50 @@ class MainActivity : ComponentActivity() {
     private var pendingWidgetReconfigure: Boolean = false
     // Bumped whenever a widget task is added/reconfigured so Compose reloads Store.
     private var tasksRevision by mutableIntStateOf(0)
+
+    private var pendingAudioCallback: ((ImportedAudio?) -> Unit)? = null
+
+    private val pickAudioLauncher = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        val callback = pendingAudioCallback ?: return@registerForActivityResult
+        pendingAudioCallback = null
+        if (uri == null) {
+            callback(null)
+            return@registerForActivityResult
+        }
+        // Copy off the main thread: recordings can be a few MB.
+        Thread {
+            val imported = runCatching { importAudio(uri) }.getOrNull()
+            runOnUiThread { callback(imported) }
+        }.start()
+    }
+
+    /** Uploaded recordings live in private app storage, so the app gate can play them without permissions. */
+    private val audioStorage = object : AudioStorage {
+        override val formatsHint = "MP3, M4A, WAV, OGG und andere gängige Formate funktionieren."
+
+        override fun pick(onPicked: (ImportedAudio?) -> Unit) {
+            pendingAudioCallback = onPicked
+            pickAudioLauncher.launch(arrayOf("audio/*"))
+        }
+
+        override fun delete(path: String) {
+            runCatching { File(path).takeIf { it.parentFile == audioDir() }?.delete() }
+        }
+    }
+
+    private fun audioDir(): File = File(filesDir, "audio").apply { mkdirs() }
+
+    private fun importAudio(uri: Uri): ImportedAudio {
+        var displayName = ""
+        contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+            if (c.moveToFirst()) displayName = c.getString(0).orEmpty()
+        }
+        val ext = displayName.substringAfterLast('.', "").lowercase().takeIf { it.length in 1..5 } ?: "audio"
+        val target = File(audioDir(), "${UUID.randomUUID()}.$ext")
+        val input = contentResolver.openInputStream(uri) ?: error("cannot open $uri")
+        input.use { src -> target.outputStream().use { src.copyTo(it) } }
+        return ImportedAudio(target.absolutePath, displayName.substringBeforeLast('.'))
+    }
 
     private val bindWidgetLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -111,17 +158,21 @@ class MainActivity : ComponentActivity() {
                 Surface(Modifier.fillMaxSize()) {
                     var redirectMinutes by remember { mutableIntStateOf(1) }
                     val control = remember { RunControl() }
-                    BackHandler(enabled = screen != MainScreen.HOME || control.running) {
-                        screen = when (screen) {
-                            MainScreen.PICK_REDIRECT_APP, MainScreen.PICK_WIDGET -> MainScreen.TASKS
-                            else -> MainScreen.HOME
+                    BackHandler(enabled = screen != MainScreen.HOME || control.canGoBack) {
+                        if (screen == MainScreen.HOME) {
+                            control.back()
+                        } else {
+                            screen = when (screen) {
+                                MainScreen.PICK_REDIRECT_APP, MainScreen.PICK_WIDGET -> MainScreen.TASKS
+                                else -> MainScreen.HOME
+                            }
+                            widgetError = null
                         }
-                        widgetError = null
-                        control.running = false
                     }
                     Column(Modifier.safeDrawingPadding().padding(24.dp).fillMaxSize()) {
                         when (screen) {
                             MainScreen.APPS -> Apps(store, onExit = { screen = MainScreen.HOME })
+                            MainScreen.EXERCISES -> GateExercisesScreen(store, onExit = { screen = MainScreen.HOME })
                             MainScreen.PICK_REDIRECT_APP -> RedirectAppPicker(
                                 minutes = redirectMinutes,
                                 onPick = { entry ->
@@ -174,11 +225,12 @@ class MainActivity : ComponentActivity() {
                                 },
                                 onExit = { screen = MainScreen.HOME },
                             )
-                            MainScreen.HOME -> GameApp(store, control) {
+                            MainScreen.HOME -> GameApp(store, control, audioStorage = audioStorage) {
                                 GateSection(
                                     store = store,
                                     onApps = { screen = MainScreen.APPS },
                                     onTasks = { screen = MainScreen.TASKS },
+                                    onExercises = { screen = MainScreen.EXERCISES },
                                 )
                             }
                         }
@@ -350,7 +402,12 @@ class MainActivity : ComponentActivity() {
 
 /** The app-gate block at the bottom of the home screen, with One-Sec-style permission setup. */
 @Composable
-private fun ColumnScope.GateSection(store: Store, onApps: () -> Unit, onTasks: () -> Unit) {
+private fun ColumnScope.GateSection(
+    store: Store,
+    onApps: () -> Unit,
+    onTasks: () -> Unit,
+    onExercises: () -> Unit,
+) {
     val context = LocalContext.current
     var overlayOn by remember { mutableStateOf(Settings.canDrawOverlays(context)) }
     var gateOn by remember { mutableStateOf(gateEnabled(context)) }
@@ -360,6 +417,9 @@ private fun ColumnScope.GateSection(store: Store, onApps: () -> Unit, onTasks: (
     var gateRelockMode by remember { mutableStateOf(store.gateRelockMode) }
     var minutes by remember { mutableIntStateOf(store.unlockMinutes) }
     var gateMode by remember { mutableStateOf(store.gateMode) }
+    val library = remember { Library(store) }
+    val runs = remember { library.runs }
+    var gateRunId by remember { mutableStateOf(store.gateRunId.takeIf { id -> runs.any { it.id == id } }.orEmpty()) }
 
     // Re-check both system permissions whenever the user returns from Android Settings.
     LifecycleResumeEffect(Unit) {
@@ -445,7 +505,40 @@ private fun ColumnScope.GateSection(store: Store, onApps: () -> Unit, onTasks: (
         Text("Sperr-Aufgaben: $poolSummary")
     }
     Text("Modus der App-Sperre", fontSize = 14.sp)
-    ModePicker(selected = gateMode, onSelect = { gateMode = it; store.gateMode = it })
+    RunPicker(
+        mode = gateMode,
+        selectedRunId = gateRunId,
+        runs = runs,
+        onSelectMode = {
+            gateMode = it
+            gateRunId = ""
+            store.gateMode = it
+            store.gateRunId = ""
+        },
+        onSelectRun = {
+            gateRunId = it.id
+            store.gateRunId = it.id
+        },
+    )
+    if (gateRunId.isEmpty()) {
+        val totalExercises = enabledExercises(gateMode, emptySet()).size
+        val enabledCount = enabledExercises(gateMode, store.gateDisabledExerciseIds).size
+        OutlinedButton(onClick = onExercises, modifier = Modifier.fillMaxWidth()) {
+            Text(
+                if (enabledCount == 0 || enabledCount == totalExercises) {
+                    "Abgefragte Aufgaben: alle $totalExercises"
+                } else {
+                    "Abgefragte Aufgaben: $enabledCount von $totalExercises"
+                }
+            )
+        }
+    } else {
+        Text(
+            "Die App-Sperre fragt deinen eigenen Run ab (bearbeiten unter „Eigene Runs & Audios“).",
+            fontSize = 12.sp,
+            color = Color.White.copy(alpha = 0.72f),
+        )
+    }
     Stepper("Wechselnde Aufgaben pro Sperre", gatePoolSize, 2..18) { gatePoolSize = it; store.gatePoolSize = it }
     Text("Tonart pro Sperre", fontSize = 14.sp)
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -522,6 +615,49 @@ private fun ColumnScope.GateSection(store: Store, onApps: () -> Unit, onTasks: (
     if (gateRelockMode == GateRelockMode.TIMER) {
         Stepper("Minuten offen danach", minutes, 1..60) { minutes = it; store.unlockMinutes = it }
     }
+}
+
+/**
+ * Lets the user choose which chord progressions, cadences, chord types and inversions the app
+ * gate asks. Each entry can be previewed with ▶; deselected IDs are stored as exclusions.
+ */
+@Composable
+private fun ColumnScope.GateExercisesScreen(store: Store, onExit: () -> Unit) {
+    var mode by remember { mutableStateOf(store.gateMode) }
+    var disabled by remember { mutableStateOf(store.gateDisabledExerciseIds) }
+    val groups = remember(mode) { builtinChecklistGroups(mode) }
+    val total = groups.sumOf { it.items.size }
+    val enabledCount = groups.sumOf { g -> g.items.count { it.id !in disabled } }
+
+    Text("Abgefragte Aufgaben", fontSize = 26.sp, fontWeight = FontWeight.Bold)
+    Text(
+        "Wähle, welche Akkordfolgen beim Öffnen einer gesperrten App drankommen. " +
+            "Pro Sperre werden bis zu ${store.gatePoolSize} davon gezogen. ▶ spielt eine Hörprobe.",
+        fontSize = 13.sp,
+        color = Color.White.copy(alpha = 0.75f),
+        modifier = Modifier.padding(top = 4.dp, bottom = 10.dp),
+    )
+    ModePicker(selected = mode, onSelect = { mode = it; store.gateMode = it })
+    Text(
+        if (enabledCount == 0) {
+            "Nichts ausgewählt – dann werden alle $total abgefragt."
+        } else {
+            "$enabledCount von $total ausgewählt"
+        },
+        fontSize = 13.sp,
+        color = if (enabledCount == 0) Bad else MaterialTheme.colorScheme.primary,
+        modifier = Modifier.padding(vertical = 8.dp),
+    )
+    ItemChecklist(
+        groups = groups,
+        isChecked = { it !in disabled },
+        onChange = { ids, checked ->
+            disabled = if (checked) disabled - ids else disabled + ids
+            store.gateDisabledExerciseIds = disabled
+        },
+        modifier = Modifier.weight(1f),
+    )
+    Button(onClick = { ChordPlayer.stop(); onExit() }, modifier = Modifier.fillMaxWidth()) { Text("Fertig") }
 }
 
 @Composable

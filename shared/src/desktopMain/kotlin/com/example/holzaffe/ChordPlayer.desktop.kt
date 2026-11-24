@@ -1,5 +1,6 @@
 package com.example.holzaffe
 
+import java.io.File
 import javax.sound.sampled.AudioFormat
 import javax.sound.sampled.AudioSystem
 import javax.sound.sampled.Clip
@@ -12,6 +13,20 @@ actual object ChordPlayer {
 
     @Synchronized
     actual fun playArpeggiated(chords: List<List<Int>>) = playPcm(Synth.renderArpeggiated(chords))
+
+    /** Java Sound decodes WAV, AIFF and AU; other formats stay silent instead of failing. */
+    @Synchronized
+    actual fun playFile(path: String) {
+        stop()
+        clip = runCatching {
+            AudioSystem.getAudioInputStream(File(path)).use { stream ->
+                AudioSystem.getClip().apply {
+                    open(stream)
+                    start()
+                }
+            }
+        }.getOrNull()
+    }
 
     private fun playPcm(pcm: ShortArray) {
         stop()

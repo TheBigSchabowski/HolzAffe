@@ -42,6 +42,16 @@ class Store(context: Context) : Scores {
         prefs.edit().putInt(highScoreKey(mode), value).apply()
     }
 
+    override fun getInt(key: String, default: Int): Int = prefs.getInt(key, default)
+    override fun putInt(key: String, value: Int) = prefs.edit().putInt(key, value).apply()
+    override fun getString(key: String, default: String): String = prefs.getString(key, default) ?: default
+    override fun putString(key: String, value: String) = prefs.edit().putString(key, value).apply()
+
+    /** Own run used by the app gate instead of [gateMode]; empty means the built-in mode. */
+    var gateRunId: String
+        get() = prefs.getString("gateRunId", "").orEmpty()
+        set(v) = prefs.edit().putString("gateRunId", v).apply()
+
     var gateMode: GameMode
         get() = GameMode.fromKey(prefs.getString("gateMode", null))
         set(v) = prefs.edit().putString("gateMode", v.key).apply()
@@ -62,6 +72,14 @@ class Store(context: Context) : Scores {
     var gatePoolSize: Int
         get() = prefs.getInt("gatePoolSize", GateSessionDeck.DEFAULT_POOL_SIZE).coerceIn(2, 18)
         set(v) = prefs.edit().putInt("gatePoolSize", v.coerceIn(2, 18)).apply()
+
+    /**
+     * Exercise IDs the user deselected for the app gate (e.g. `S:I:iii`). Stored as exclusions so
+     * everything is asked by default and exercises added in later versions start out enabled.
+     */
+    var gateDisabledExerciseIds: Set<String>
+        get() = prefs.getStringSet("gateDisabledExerciseIds", null)?.toSet() ?: emptySet()
+        set(v) = prefs.edit().putStringSet("gateDisabledExerciseIds", v.toSet()).apply()
 
     /** How key and major/minor tonality behave per app-start gate session (default: single key + single gender). */
     var gateKeyMode: GateKeyMode

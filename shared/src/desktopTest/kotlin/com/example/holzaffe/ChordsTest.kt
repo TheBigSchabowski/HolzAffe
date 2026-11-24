@@ -424,6 +424,53 @@ class ChordsTest {
     }
 
     @Test
+    fun gateSessionDeckOnlyAsksSelectedExercises() {
+        val wanted = setOf("S:I:IV", "S:I:V", "S:I:vi")
+        val disabled = EXERCISES_BY_MODE.getValue(GameMode.DEGREES).map { it.id }.toSet() - wanted
+        for (keyMode in GateKeyMode.entries) {
+            repeat(20) { seed ->
+                val deck = GateSessionDeck(GameMode.DEGREES, keyMode = keyMode, rnd = Random(seed), disabledIds = disabled)
+                assertEquals(wanted, deck.pool.map { it.id }.toSet(), "keyMode=$keyMode seed=$seed")
+                // Only Dur progressions are selected, so a single-tonality session must never pick Moll.
+                if (keyMode == GateKeyMode.SINGLE_KEY_TONALITY) assertEquals(false, deck.sessionMinor)
+                repeat(12) { assertTrue(deck.nextQuestion().progressionId in wanted) }
+            }
+        }
+
+        // Only Moll cadences selected → single-tonality sessions stay in Moll.
+        val minorOnly = MINOR_CADENCES.take(2).map { it.id }.toSet()
+        val disabledCadences = (MAJOR_CADENCES + MINOR_CADENCES).map { it.id }.toSet() - minorOnly
+        repeat(10) { seed ->
+            val deck = GateSessionDeck(GameMode.CADENCES, rnd = Random(seed), disabledIds = disabledCadences)
+            assertEquals(true, deck.sessionMinor)
+            assertEquals(minorOnly, deck.pool.map { it.id }.toSet())
+        }
+
+        // Mix: exclusions apply across all modes; chord types stay available alongside Dur-only progressions.
+        val mixDisabled = ALL_EXERCISES.map { it.id }.toSet() - wanted - "T:maj7"
+        val mixDeck = GateSessionDeck(GameMode.MIX, maxPoolSize = 18, rnd = Random(3), disabledIds = mixDisabled)
+        assertTrue(mixDeck.pool.map { it.id }.toSet().all { it in wanted + "T:maj7" })
+        assertTrue("T:maj7" in mixDeck.pool.map { it.id })
+
+        // Deselecting everything falls back to the full catalog instead of an empty gate.
+        val allDisabled = ALL_EXERCISES.map { it.id }.toSet()
+        val fallback = GateSessionDeck(GameMode.CHORD_TYPES, maxPoolSize = 18, rnd = Random(5), disabledIds = allDisabled)
+        assertEquals(CHORD_TYPE_EXERCISES.size, fallback.pool.size)
+    }
+
+    @Test
+    fun exerciseGroupsCoverEachModeExactlyOnce() {
+        for (mode in GameMode.PLAYABLE) {
+            val grouped = exerciseGroups(mode).flatMap { it.exercises }.map { it.id }
+            assertEquals(EXERCISES_BY_MODE.getValue(mode).map { it.id }.toSet(), grouped.toSet(), "mode=$mode")
+            assertEquals(grouped.size, grouped.toSet().size)
+        }
+        assertEquals(ALL_EXERCISES.size, exerciseGroups(GameMode.MIX).sumOf { it.exercises.size })
+        assertEquals("I → ♭VII", QuestionFactory.exerciseById("S:I:♭VII")!!.displayLabel)
+        assertEquals("i → VI → VII", QuestionFactory.exerciseById("K:i:VI-VII")!!.displayLabel)
+    }
+
+    @Test
     fun gateTaskCodecAndChallengePickerSwitchBetweenQuizAndCustomTasks() {
         val tasks = listOf(
             GateTask(id = "t1", text = "Akkorde übers Griffbrett, C–G–D!", minutes = 1),

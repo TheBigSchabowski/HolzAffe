@@ -52,6 +52,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import kotlin.random.Random
 import kotlin.time.TimeSource
 import kotlinx.coroutines.delay
 
@@ -91,6 +92,7 @@ class GateActivity : ComponentActivity() {
         target = intent.getStringExtra(EXTRA_PACKAGE).orEmpty()
         activeTargetPkg = target
         val store = Store(this)
+        store.applySoundSettings()
         val required = store.required
         val mode = store.gateMode
         val poolSize = store.gatePoolSize
@@ -125,20 +127,47 @@ class GateActivity : ComponentActivity() {
                     when (challenge) {
                         is GateChallenge.Quiz -> {
                             var paused by remember(target, sessionId) { mutableStateOf(false) }
-                            val deck = remember(target, sessionId, mode, poolSize, keyMode) {
-                                GateSessionDeck(
-                                    mode = mode,
-                                    maxPoolSize = poolSize,
-                                    keyMode = keyMode,
-                                )
+                            val quiz = remember(target, sessionId, mode, poolSize, keyMode) {
+                                // Read fresh per opening: the singleTask gate is reused via onNewIntent.
+                                val library = Library(store)
+                                val custom = library.target(store.gateRunId, mode) as? RunTarget.Custom
+                                if (custom != null) {
+                                    val fixedKey = if (keyMode != GateKeyMode.RANDOM) 48 + Random.nextInt(12) else null
+                                    val runDeck = CustomRunDeck(
+                                        custom.items,
+                                        allAudios = library.audios,
+                                        maxPoolSize = poolSize,
+                                        fixedKey = fixedKey,
+                                    )
+                                    GateQuiz(
+                                        poolSize = runDeck.pool.size,
+                                        subtitle = "Run „${custom.run.name}“",
+                                        mode = GameMode.MIX,
+                                        next = runDeck::nextQuestion,
+                                        record = runDeck::record,
+                                    )
+                                } else {
+                                    val deck = GateSessionDeck(
+                                        mode = mode,
+                                        maxPoolSize = poolSize,
+                                        keyMode = keyMode,
+                                        disabledIds = store.gateDisabledExerciseIds,
+                                    )
+                                    GateQuiz(
+                                        poolSize = deck.pool.size,
+                                        subtitle = when (keyMode) {
+                                            GateKeyMode.SINGLE_KEY_TONALITY ->
+                                                if (deck.sessionMinor == true) "1 Tonart (Moll)" else "1 Tonart (Dur)"
+                                            GateKeyMode.SAME_ROOT -> "1 Grundton (Dur + Moll)"
+                                            GateKeyMode.RANDOM -> "alle Tonarten"
+                                        },
+                                        mode = mode,
+                                        next = deck::nextQuestion,
+                                        record = {},
+                                    )
+                                }
                             }
-                            val nextGateQuestion = remember(deck) { { deck.nextQuestion() } }
-                            val keySubtitle = when (keyMode) {
-                                GateKeyMode.SINGLE_KEY_TONALITY ->
-                                    if (deck.sessionMinor == true) "1 Tonart (Moll)" else "1 Tonart (Dur)"
-                                GateKeyMode.SAME_ROOT -> "1 Grundton (Dur + Moll)"
-                                GateKeyMode.RANDOM -> "alle Tonarten"
-                            }
+                            val nextGateQuestion = remember(quiz) { { quiz.next() } }
                             Column(
                                 Modifier.safeDrawingPadding().padding(24.dp).fillMaxSize(),
                                 verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -146,7 +175,7 @@ class GateActivity : ComponentActivity() {
                             ) {
                                 Text("Erst hören, dann ${appLabel(target)}", fontSize = 22.sp)
                                 Text(
-                                    "${deck.pool.size} Aufgaben · $keySubtitle",
+                                    "${quiz.poolSize} Aufgaben · ${quiz.subtitle}",
                                     fontSize = 13.sp,
                                     color = MaterialTheme.colorScheme.primary,
                                 )
@@ -159,12 +188,13 @@ class GateActivity : ComponentActivity() {
                                 QuizPanel(
                                     active = solved < required,
                                     scores = store,
-                                    mode = mode,
+                                    mode = quiz.mode,
                                     paused = paused,
                                     onPausedChange = { paused = it },
                                     isTimed = false,
                                     nextQuestion = nextGateQuestion,
                                     onAnswer = { ok ->
+                                        quiz.record(ok)
                                         if (ok && ++solved >= required) {
                                             unlockAndOpen(store, target)
                                         }
@@ -533,3 +563,12 @@ private fun TimedTaskGate(
         TextButton(onClick = onCancel) { Text("Doch nicht öffnen") }
     }
 }
+
+/** Question source of one gate opening: a built-in [GateSessionDeck] or an own [CustomRunDeck]. */
+private class GateQuiz(
+    val poolSize: Int,
+    val subtitle: String,
+    val mode: GameMode,
+    val next: () -> Question,
+    val record: (Boolean) -> Unit,
+)
