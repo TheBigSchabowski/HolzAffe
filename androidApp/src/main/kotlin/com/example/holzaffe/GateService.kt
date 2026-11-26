@@ -51,6 +51,10 @@ class GateService : AccessibilityService() {
     private val redirectTick = object : Runnable {
         override fun run() {
             val session = activeRedirect ?: return
+            if (!store.isGateCurrentlyEnforced()) {
+                cancelRedirect()
+                return
+            }
             val remainingMs = session.endElapsedMs - SystemClock.elapsedRealtime()
             if (remainingMs <= 0L) {
                 finishRedirect(session)
@@ -94,6 +98,22 @@ class GateService : AccessibilityService() {
         // Ignore transient system overlays & soft keyboards so typing doesn't count as leaving the app.
         if (isTransientSystemPackage(pkg)) return
 
+        // In ON_APP_LEAVE mode, switching to any other app (including Home) revokes the unlock
+        // once the brief post-unlock transition grace window has passed.
+        val prev = activeUnlockedPkg
+        if (prev != null && pkg != prev) {
+            if (store.gateRelockMode == GateRelockMode.ON_APP_LEAVE && !store.wasRecentlyUnlocked(prev)) {
+                store.relock(prev)
+            }
+            activeUnlockedPkg = null
+        }
+
+        // Respect active pause timers and weekly free/block schedules.
+        if (!store.isGateCurrentlyEnforced()) {
+            if (activeRedirect != null) cancelRedirect()
+            return
+        }
+
         // If a timed redirect to a practice app is active:
         // - Allow the practice app itself (even if it is also in the blocked list)
         // - Bounce early attempts on the blocked app back to the practice app.
@@ -109,16 +129,6 @@ class GateService : AccessibilityService() {
                 }
                 return
             }
-        }
-
-        // In ON_APP_LEAVE mode, switching to any other app (including Home) revokes the unlock
-        // once the brief post-unlock transition grace window has passed.
-        val prev = activeUnlockedPkg
-        if (prev != null && pkg != prev) {
-            if (store.gateRelockMode == GateRelockMode.ON_APP_LEAVE && !store.wasRecentlyUnlocked(prev)) {
-                store.relock(prev)
-            }
-            activeUnlockedPkg = null
         }
 
         if (pkg !in store.blocked) return
@@ -233,6 +243,12 @@ class GateService : AccessibilityService() {
             val svc = instance ?: return false
             svc.beginRedirect(blockedPkg, practicePkg, durationMs)
             return true
+        }
+
+        /** Cancels any active practice redirect overlay (e.g. when a gate pause starts). */
+        fun cancelActiveRedirect() {
+            val svc = instance ?: return
+            svc.mainHandler.post { svc.cancelRedirect() }
         }
     }
 }

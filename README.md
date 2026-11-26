@@ -54,6 +54,14 @@ und die nötigen Berechtigungen (**Über anderen Apps einblenden** + **Bedienung
 zur App-Info für Android 13+ „Eingeschränkte Einstellungen“) lassen sich direkt in HolzAffe einrichten.
 Es werden keine Bildschirminhalte gelesen.
 
+Unter **Zeitplan & Sperr-Pause** (über die Status-Pill oben rechts oder ⚙ *Einstellungen*) lässt
+sich die App-Sperre per **Schnell-Pause** vorübergehend aussetzen (`30 Min.`, `1 Std.`, `2 Std.`
+oder `Bis Uhrzeit`, jederzeit wieder aktivierbar). Zusätzlich kannst du beliebig viele
+wiederkehrende **Wochen-Timeslots** als **`Gesperrt`** oder **`Ohne Sperre`** mit Start-/Endzeit
+(inkl. Über-Mitternacht und Ganztägig) sowie Wochentagen konfigurieren – z. B. tagsüber auf der
+Arbeit ohne Sperre und abends oder am Wochenende mit Weiterleitungen und Aufgaben gesperrt
+(`Ohne Sperre` hat dabei Vorrang vor `Gesperrt`).
+
 ## Installieren
 
 Pakete liegen unter [Releases](../../releases): APK (Android 8.1+), DMG (macOS, Apple Silicon),

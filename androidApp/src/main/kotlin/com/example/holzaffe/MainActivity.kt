@@ -1,6 +1,7 @@
 package com.example.holzaffe
 
 import android.app.ActivityOptions
+import android.app.TimePickerDialog
 import android.appwidget.AppWidgetHost
 import android.appwidget.AppWidgetManager
 import android.appwidget.AppWidgetProviderInfo
@@ -39,6 +40,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -54,6 +56,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -63,14 +66,21 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import java.io.File
+import java.time.Instant
+import java.time.LocalDateTime
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.time.temporal.ChronoUnit
 import java.util.UUID
+import kotlinx.coroutines.delay
 
-private enum class OverlayScreen { NONE, GATE_SETTINGS, APPS, EXERCISES, PICK_REDIRECT_APP, PICK_WIDGET }
+private enum class OverlayScreen { NONE, GATE_SETTINGS, APPS, EXERCISES, PICK_REDIRECT_APP, PICK_WIDGET, SCHEDULE, EDIT_SLOT }
 
 class MainActivity : ComponentActivity() {
     private lateinit var store: Store
@@ -78,6 +88,8 @@ class MainActivity : ComponentActivity() {
     private val control = RunControl()
 
     private var overlayScreen by mutableStateOf(OverlayScreen.NONE)
+    private var editingSlotId by mutableStateOf<String?>(null)
+    private var scheduleReturnToSettings by mutableStateOf(false)
     private var widgetMinutes by mutableIntStateOf(1)
     private var widgetError by mutableStateOf<String?>(null)
 
@@ -89,6 +101,8 @@ class MainActivity : ComponentActivity() {
 
     // Bumped whenever a gate task or widget is added/reconfigured so Compose tabs reload Store.
     private var tasksRevision by mutableIntStateOf(0)
+    // Bumped whenever the gate pause timer or weekly time slots change.
+    private var scheduleRevision by mutableIntStateOf(0)
 
     private var pendingAudioCallback: ((ImportedAudio?) -> Unit)? = null
 
@@ -167,17 +181,45 @@ class MainActivity : ComponentActivity() {
                     var redirectMinutes by remember { mutableIntStateOf(1) }
                     var overlayOn by remember { mutableStateOf(Settings.canDrawOverlays(context)) }
                     var gateOn by remember { mutableStateOf(gateEnabled(context)) }
+                    var nowTick by remember { mutableLongStateOf(System.currentTimeMillis()) }
 
-                    // Re-check both system permissions whenever the user returns from Android Settings.
+                    LaunchedEffect(Unit) {
+                        while (true) {
+                            delay(15_000L)
+                            nowTick = System.currentTimeMillis()
+                        }
+                    }
+
+                    // Re-check system permissions & schedule clock whenever returning to the app.
                     LifecycleResumeEffect(Unit) {
                         overlayOn = Settings.canDrawOverlays(context)
                         gateOn = gateEnabled(context)
+                        nowTick = System.currentTimeMillis()
                         onPauseOrDispose {}
+                    }
+
+                    val scheduleStatus = remember(scheduleRevision, nowTick) {
+                        store.gateScheduleStatus(nowEpochMs = nowTick)
+                    }
+                    val onScheduleChanged = {
+                        nowTick = System.currentTimeMillis()
+                        scheduleRevision++
+                        if (!store.isGateCurrentlyEnforced()) {
+                            GateService.cancelActiveRedirect()
+                        }
+                    }
+                    val openSchedule = { fromSettings: Boolean ->
+                        scheduleReturnToSettings = fromSettings
+                        nowTick = System.currentTimeMillis()
+                        overlayScreen = OverlayScreen.SCHEDULE
                     }
 
                     BackHandler(enabled = overlayScreen != OverlayScreen.NONE || control.canGoBack) {
                         if (overlayScreen != OverlayScreen.NONE) {
                             overlayScreen = when (overlayScreen) {
+                                OverlayScreen.EDIT_SLOT -> OverlayScreen.SCHEDULE
+                                OverlayScreen.SCHEDULE ->
+                                    if (scheduleReturnToSettings) OverlayScreen.GATE_SETTINGS else OverlayScreen.NONE
                                 OverlayScreen.APPS -> OverlayScreen.GATE_SETTINGS
                                 OverlayScreen.PICK_REDIRECT_APP,
                                 OverlayScreen.PICK_WIDGET,
@@ -201,8 +243,58 @@ class MainActivity : ComponentActivity() {
                                     store = store,
                                     overlayOn = overlayOn,
                                     gateOn = gateOn,
+                                    scheduleStatus = scheduleStatus,
+                                    scheduleRevision = scheduleRevision,
+                                    nowMs = nowTick,
                                     onApps = { overlayScreen = OverlayScreen.APPS },
+                                    onSchedule = { openSchedule(true) },
+                                    onScheduleChanged = onScheduleChanged,
                                     onBack = { overlayScreen = OverlayScreen.NONE },
+                                )
+                            }
+
+                            OverlayScreen.SCHEDULE -> Column(
+                                Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp),
+                            ) {
+                                GateScheduleScreen(
+                                    store = store,
+                                    scheduleStatus = scheduleStatus,
+                                    scheduleRevision = scheduleRevision,
+                                    nowMs = nowTick,
+                                    onAddSlot = {
+                                        editingSlotId = null
+                                        overlayScreen = OverlayScreen.EDIT_SLOT
+                                    },
+                                    onEditSlot = { slotId ->
+                                        editingSlotId = slotId
+                                        overlayScreen = OverlayScreen.EDIT_SLOT
+                                    },
+                                    onScheduleChanged = onScheduleChanged,
+                                    onBack = {
+                                        overlayScreen = if (scheduleReturnToSettings) {
+                                            OverlayScreen.GATE_SETTINGS
+                                        } else {
+                                            OverlayScreen.NONE
+                                        }
+                                    },
+                                )
+                            }
+
+                            OverlayScreen.EDIT_SLOT -> Column(
+                                Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp),
+                            ) {
+                                GateSlotEditorScreen(
+                                    store = store,
+                                    slotId = editingSlotId,
+                                    onSaved = {
+                                        onScheduleChanged()
+                                        overlayScreen = OverlayScreen.SCHEDULE
+                                    },
+                                    onDeleted = {
+                                        onScheduleChanged()
+                                        overlayScreen = OverlayScreen.SCHEDULE
+                                    },
+                                    onCancel = { overlayScreen = OverlayScreen.SCHEDULE },
                                 )
                             }
 
@@ -267,6 +359,8 @@ class MainActivity : ComponentActivity() {
                                     GateStatusPill(
                                         active = overlayOn && gateOn,
                                         blockedCount = store.blocked.size,
+                                        scheduleStatus = scheduleStatus,
+                                        nowMs = nowTick,
                                         onClick = { overlayScreen = OverlayScreen.GATE_SETTINGS },
                                     )
                                 },
@@ -287,7 +381,11 @@ class MainActivity : ComponentActivity() {
                                         revision = tasksRevision,
                                         overlayOn = overlayOn,
                                         gateOn = gateOn,
+                                        scheduleStatus = scheduleStatus,
+                                        scheduleRevision = scheduleRevision,
+                                        nowMs = nowTick,
                                         onOpenGateSettings = { overlayScreen = OverlayScreen.GATE_SETTINGS },
+                                        onOpenSchedule = { openSchedule(false) },
                                         onChanged = { tasksRevision++ },
                                     )
                                 },
@@ -297,6 +395,9 @@ class MainActivity : ComponentActivity() {
                                         revision = tasksRevision,
                                         overlayOn = overlayOn,
                                         gateOn = gateOn,
+                                        scheduleStatus = scheduleStatus,
+                                        scheduleRevision = scheduleRevision,
+                                        nowMs = nowTick,
                                         onPickApp = { mins ->
                                             redirectMinutes = mins
                                             overlayScreen = OverlayScreen.PICK_REDIRECT_APP
@@ -313,6 +414,7 @@ class MainActivity : ComponentActivity() {
                                             }
                                         },
                                         onOpenGateSettings = { overlayScreen = OverlayScreen.GATE_SETTINGS },
+                                        onOpenSchedule = { openSchedule(false) },
                                         onChanged = { tasksRevision++ },
                                     )
                                 },
@@ -328,6 +430,20 @@ class MainActivity : ComponentActivity() {
                                             },
                                             badge = if (overlayOn && gateOn) "Aktiv" else "Setup",
                                             onClick = { overlayScreen = OverlayScreen.GATE_SETTINGS },
+                                        )
+                                        val activeSlotCount = remember(scheduleRevision) {
+                                            if (store.gateScheduleEnabled) store.gateTimeSlots.count { it.enabled } else 0
+                                        }
+                                        val sub = scheduleSubline(scheduleStatus, nowTick)
+                                        NavRow(
+                                            title = "Zeitplan & Sperr-Pause",
+                                            subtitle = if (sub.isNotBlank()) {
+                                                "${scheduleHeadline(scheduleStatus, nowTick)} · $sub"
+                                            } else {
+                                                scheduleHeadline(scheduleStatus, nowTick)
+                                            },
+                                            badge = scheduleBadge(scheduleStatus, activeSlotCount),
+                                            onClick = { openSchedule(false) },
                                         )
                                     }
                                 },
@@ -505,10 +621,15 @@ class MainActivity : ComponentActivity() {
 private fun GateStatusPill(
     active: Boolean,
     blockedCount: Int,
+    scheduleStatus: GateScheduleStatus,
+    nowMs: Long,
     onClick: () -> Unit,
 ) {
-    val bg = if (active) AppColors.GoodSoft else AppColors.AccentGoldSoft
-    val fg = if (active) Good else AppColors.AccentGold
+    val enforced = active && scheduleStatus.enforced
+    val bg = if (enforced) AppColors.GoodSoft else AppColors.AccentGoldSoft
+    val fg = if (enforced) Good else AppColors.AccentGold
+    val icon = if (active && !scheduleStatus.enforced) AppIcons.Clock else AppIcons.Lock
+    val label = pillLabel(active, blockedCount, scheduleStatus, nowMs)
     Surface(
         modifier = Modifier
             .clip(RoundedCornerShape(10.dp))
@@ -522,12 +643,14 @@ private fun GateStatusPill(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(5.dp),
         ) {
-            Icon(AppIcons.Lock, contentDescription = null, tint = fg, modifier = Modifier.size(14.dp))
+            Icon(icon, contentDescription = null, tint = fg, modifier = Modifier.size(14.dp))
             Text(
-                text = if (active) "$blockedCount Apps" else "Einrichten",
+                text = label,
                 fontSize = 12.sp,
                 fontWeight = FontWeight.SemiBold,
                 color = fg,
+                maxLines = 1,
+                softWrap = false,
             )
         }
     }
@@ -551,11 +674,19 @@ private fun PermissionBanner(onOpenGateSettings: () -> Unit) {
     }
 }
 
-/** Summary pill showing what is currently in the app-gate rotation pool across tabs. */
+/** Summary pill showing active gate challenges and current schedule/pause state. */
 @Composable
-private fun RotationSummaryCard(store: Store, revision: Int) {
+private fun RotationSummaryCard(
+    store: Store,
+    revision: Int,
+    scheduleStatus: GateScheduleStatus,
+    scheduleRevision: Int,
+    nowMs: Long,
+    onOpenSchedule: () -> Unit,
+) {
     val includeQuiz = remember(revision) { store.gateIncludeQuiz }
     val activeTasks = remember(revision) { store.activeGateTasks() }
+    val hasScheduleSlots = remember(scheduleRevision) { store.gateScheduleEnabled && store.gateTimeSlots.any { it.enabled } }
     val textCount = activeTasks.count { it.kind == GateTaskKind.TEXT }
     val redirectCount = activeTasks.count { it.kind == GateTaskKind.APP || it.kind == GateTaskKind.WIDGET }
 
@@ -565,28 +696,59 @@ private fun RotationSummaryCard(store: Store, revision: Int) {
         if (redirectCount > 0) add("$redirectCount Weiterleitung(en)")
     }
     val summary = if (parts.isEmpty()) "Nur Gehörbildung" else parts.joinToString(" · ")
+    val scheduleText = rotationScheduleSummary(scheduleStatus, hasScheduleSlots, nowMs)
 
     Surface(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onOpenSchedule),
         shape = RoundedCornerShape(12.dp),
         color = AppColors.SurfaceCard,
-        border = BorderStroke(1.dp, AppColors.BorderSubtle),
+        border = BorderStroke(
+            width = 1.dp,
+            color = if (!scheduleStatus.enforced) AppColors.AccentGold.copy(alpha = 0.45f) else AppColors.BorderSubtle,
+        ),
     ) {
-        Row(
+        Column(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp),
         ) {
-            Text("Aktive Rotation:", fontSize = 12.sp, color = AppColors.TextSecondary)
-            Text(
-                summary,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = AppColors.AccentGold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text("Aktive Rotation:", fontSize = 12.sp, color = AppColors.TextSecondary)
+                Text(
+                    summary,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = AppColors.AccentGold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            if (scheduleText != null) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    val tint = if (!scheduleStatus.enforced) AppColors.AccentGold else Good
+                    Icon(AppIcons.Clock, contentDescription = null, tint = tint, modifier = Modifier.size(13.dp))
+                    Text(
+                        scheduleText,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = tint,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
         }
     }
 }
@@ -749,7 +911,11 @@ private fun AufgabenTab(
     revision: Int,
     overlayOn: Boolean,
     gateOn: Boolean,
+    scheduleStatus: GateScheduleStatus,
+    scheduleRevision: Int,
+    nowMs: Long,
     onOpenGateSettings: () -> Unit,
+    onOpenSchedule: () -> Unit,
     onChanged: () -> Unit,
 ) {
     var tasks by remember(revision) { mutableStateOf(store.gateTasks) }
@@ -791,7 +957,16 @@ private fun AufgabenTab(
         if (!overlayOn || !gateOn) {
             item { PermissionBanner(onOpenGateSettings) }
         }
-        item { RotationSummaryCard(store, revision) }
+        item {
+            RotationSummaryCard(
+                store = store,
+                revision = revision,
+                scheduleStatus = scheduleStatus,
+                scheduleRevision = scheduleRevision,
+                nowMs = nowMs,
+                onOpenSchedule = onOpenSchedule,
+            )
+        }
 
         item {
             SectionCard {
@@ -905,11 +1080,15 @@ private fun WeiterleitungenTab(
     revision: Int,
     overlayOn: Boolean,
     gateOn: Boolean,
+    scheduleStatus: GateScheduleStatus,
+    scheduleRevision: Int,
+    nowMs: Long,
     onPickApp: (minutes: Int) -> Unit,
     onPickWidget: (minutes: Int) -> Unit,
     onConfigureWidget: (GateTask) -> Unit,
     onDeleteWidget: (widgetId: Int) -> Unit,
     onOpenGateSettings: () -> Unit,
+    onOpenSchedule: () -> Unit,
     onChanged: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -957,7 +1136,16 @@ private fun WeiterleitungenTab(
         if (!overlayOn || !gateOn) {
             item { PermissionBanner(onOpenGateSettings) }
         }
-        item { RotationSummaryCard(store, revision) }
+        item {
+            RotationSummaryCard(
+                store = store,
+                revision = revision,
+                scheduleStatus = scheduleStatus,
+                scheduleRevision = scheduleRevision,
+                nowMs = nowMs,
+                onOpenSchedule = onOpenSchedule,
+            )
+        }
 
         item {
             SectionCard {
@@ -1099,12 +1287,20 @@ private fun ColumnScope.GateSettingsScreen(
     store: Store,
     overlayOn: Boolean,
     gateOn: Boolean,
+    scheduleStatus: GateScheduleStatus,
+    scheduleRevision: Int,
+    nowMs: Long,
     onApps: () -> Unit,
+    onSchedule: () -> Unit,
+    onScheduleChanged: () -> Unit,
     onBack: () -> Unit,
 ) {
     val context = LocalContext.current
     var gateRelockMode by remember { mutableStateOf(store.gateRelockMode) }
     var minutes by remember { mutableIntStateOf(store.unlockMinutes) }
+    val activeSlotCount = remember(scheduleRevision) {
+        if (store.gateScheduleEnabled) store.gateTimeSlots.count { it.enabled } else 0
+    }
 
     SubScreenTopBar(title = "App-Sperre", onBack = onBack)
 
@@ -1114,11 +1310,28 @@ private fun ColumnScope.GateSettingsScreen(
     ) {
         if (overlayOn && gateOn) {
             SectionCard(highlighted = true) {
+                val statusTint = if (scheduleStatus.enforced) Good else AppColors.AccentGold
+                val statusIcon = if (scheduleStatus.enforced) AppIcons.Lock else AppIcons.Clock
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Icon(AppIcons.Lock, contentDescription = null, tint = Good, modifier = Modifier.size(20.dp))
-                    Column {
-                        Text("App-Sperre aktiv", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Good)
-                        Text("${store.blocked.size} App(s) werden beim Öffnen abgefangen.", fontSize = 12.sp, color = AppColors.TextSecondary)
+                    Icon(statusIcon, contentDescription = null, tint = statusTint, modifier = Modifier.size(20.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(scheduleHeadline(scheduleStatus, nowMs), fontSize = 15.sp, fontWeight = FontWeight.Bold, color = statusTint)
+                        Text(
+                            "${store.blocked.size} App(s) · ${scheduleSubline(scheduleStatus, nowMs)}",
+                            fontSize = 12.sp,
+                            color = AppColors.TextSecondary,
+                        )
+                    }
+                    if (scheduleStatus.reason == GateScheduleReason.PAUSED) {
+                        TextButton(
+                            onClick = {
+                                store.clearGatePause()
+                                onScheduleChanged()
+                            },
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                        ) {
+                            Text("Pause beenden", fontSize = 12.sp, color = AppColors.AccentGold, fontWeight = FontWeight.SemiBold)
+                        }
                     }
                 }
             }
@@ -1168,6 +1381,24 @@ private fun ColumnScope.GateSettingsScreen(
                     }
                 }
             }
+        }
+
+        QuickPauseCard(
+            store = store,
+            scheduleStatus = scheduleStatus,
+            nowMs = nowMs,
+            showExtendWhenPaused = false,
+            onScheduleChanged = onScheduleChanged,
+        )
+
+        SectionCard {
+            Text("Zeitplan & Timeslots", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = AppColors.TextPrimary)
+            NavRow(
+                title = "Zeitfenster verwalten",
+                subtitle = "$activeSlotCount aktive(s) Zeitfenster · ${scheduleHeadline(scheduleStatus, nowMs)}",
+                badge = scheduleBadge(scheduleStatus, activeSlotCount),
+                onClick = onSchedule,
+            )
         }
 
         SectionCard {
@@ -1597,4 +1828,725 @@ private fun gateEnabled(context: Context): Boolean {
     val me = ComponentName(context, GateService::class.java).flattenToString()
     val enabled = Settings.Secure.getString(context.contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES)
     return enabled.orEmpty().split(':').any { it.equals(me, ignoreCase = true) }
+}
+
+private val HH_MM_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
+
+private fun currentIsoDay(nowMs: Long): Int =
+    LocalDateTime.ofInstant(Instant.ofEpochMilli(nowMs), ZoneId.systemDefault()).dayOfWeek.value
+
+private fun formatEpochTime(epochMs: Long): String =
+    LocalDateTime.ofInstant(Instant.ofEpochMilli(epochMs), ZoneId.systemDefault()).format(HH_MM_FORMATTER)
+
+private fun formatPauseUntilLabel(epochMs: Long, nowMs: Long): String {
+    val zone = ZoneId.systemDefault()
+    val nowDt = LocalDateTime.ofInstant(Instant.ofEpochMilli(nowMs), zone)
+    val targetDt = LocalDateTime.ofInstant(Instant.ofEpochMilli(epochMs), zone)
+    val timeStr = targetDt.format(HH_MM_FORMATTER)
+    val dayDiff = ChronoUnit.DAYS.between(nowDt.toLocalDate(), targetDt.toLocalDate())
+    val targetDay = when {
+        dayDiff <= 0L -> "bis $timeStr"
+        dayDiff == 1L -> "bis morgen $timeStr"
+        else -> "bis ${GateTimeSlot.dayShortLabel(targetDt.dayOfWeek.value)} $timeStr"
+    }
+    val remaining = GateScheduleEvaluator.formatRemainingMinutes(epochMs - nowMs)
+    return "$targetDay ($remaining)"
+}
+
+private fun pillLabel(
+    active: Boolean,
+    blockedCount: Int,
+    status: GateScheduleStatus,
+    nowMs: Long,
+): String {
+    if (!active) return "Einrichten"
+    if (status.enforced) return "$blockedCount Apps"
+    if (status.reason == GateScheduleReason.PAUSED) {
+        return "Frei bis ${formatEpochTime(status.pauseUntilEpochMs)}"
+    }
+    val next = status.nextChange
+    val today = currentIsoDay(nowMs)
+    return if (next != null && next.dayOfWeek == today && next.minutesUntil < GateTimeSlot.MINUTES_PER_DAY) {
+        "Frei bis ${GateTimeSlot.formatMinute(next.minuteOfDay)}"
+    } else {
+        "Ohne Sperre"
+    }
+}
+
+private fun scheduleHeadline(status: GateScheduleStatus, nowMs: Long): String = when (status.reason) {
+    GateScheduleReason.PAUSED -> "Sperre pausiert"
+    GateScheduleReason.ALWAYS_BLOCKED -> "Sperre aktiv (immer)"
+    GateScheduleReason.IN_FREE_SLOT ->
+        "Ohne Sperre · ${status.matchingSlot?.displayLabel() ?: "Freies Fenster"}"
+    GateScheduleReason.OUTSIDE_BLOCK_SLOTS -> "Ohne Sperre"
+    GateScheduleReason.IN_BLOCK_SLOT ->
+        "Sperre aktiv · ${status.matchingSlot?.displayLabel() ?: "Zeitfenster"}"
+    GateScheduleReason.OUTSIDE_FREE_SLOTS -> "Sperre aktiv"
+}
+
+private fun scheduleSubline(status: GateScheduleStatus, nowMs: Long): String {
+    val today = currentIsoDay(nowMs)
+    return when (status.reason) {
+        GateScheduleReason.PAUSED ->
+            "Ohne Sperre ${formatPauseUntilLabel(status.pauseUntilEpochMs, nowMs)}"
+        GateScheduleReason.ALWAYS_BLOCKED ->
+            "Keine Zeitfenster aktiv – gesperrte Apps werden jederzeit abgefangen"
+        GateScheduleReason.IN_FREE_SLOT ->
+            status.nextChange?.let { "Sperre wieder ab ${it.formatRelative(today)}" } ?: "Dauerhaft ohne Sperre"
+        GateScheduleReason.OUTSIDE_BLOCK_SLOTS ->
+            status.nextChange?.let { "Nächste Sperre ab ${it.formatRelative(today)}" } ?: "Außerhalb der Sperrzeiten"
+        GateScheduleReason.IN_BLOCK_SLOT ->
+            status.nextChange?.let { "Ohne Sperre ab ${it.formatRelative(today)}" } ?: "Aktuell im Sperr-Zeitfenster"
+        GateScheduleReason.OUTSIDE_FREE_SLOTS ->
+            status.nextChange?.let { "Ohne Sperre ab ${it.formatRelative(today)}" } ?: "Außerhalb deiner freien Zeiten"
+    }
+}
+
+private fun rotationScheduleSummary(
+    status: GateScheduleStatus,
+    hasActiveScheduleSlots: Boolean,
+    nowMs: Long,
+): String? {
+    if (status.enforced && !hasActiveScheduleSlots) return null
+    val today = currentIsoDay(nowMs)
+    return when (status.reason) {
+        GateScheduleReason.PAUSED -> "Pausiert ${formatPauseUntilLabel(status.pauseUntilEpochMs, nowMs)}"
+        GateScheduleReason.IN_FREE_SLOT, GateScheduleReason.OUTSIDE_BLOCK_SLOTS -> {
+            val next = status.nextChange?.let { " · Sperre ab ${it.formatRelative(today)}" }.orEmpty()
+            "Ohne Sperre$next"
+        }
+        GateScheduleReason.IN_BLOCK_SLOT, GateScheduleReason.OUTSIDE_FREE_SLOTS -> {
+            val next = status.nextChange?.let { " · Frei ab ${it.formatRelative(today)}" }.orEmpty()
+            "Zeitplan aktiv$next"
+        }
+        GateScheduleReason.ALWAYS_BLOCKED -> "Zeitplan aus · Immer gesperrt"
+    }
+}
+
+private fun scheduleBadge(status: GateScheduleStatus, activeSlotCount: Int): String = when {
+    status.reason == GateScheduleReason.PAUSED -> "Pausiert"
+    !status.enforced -> "Frei"
+    activeSlotCount > 0 -> "Aktiv"
+    else -> "Immer"
+}
+
+private fun showTimePicker(context: Context, initialMinute: Int, onPicked: (Int) -> Unit) {
+    val clamped = initialMinute.coerceIn(0, GateTimeSlot.MINUTES_PER_DAY - 1)
+    TimePickerDialog(
+        context,
+        { _, hourOfDay, minute -> onPicked(hourOfDay * 60 + minute) },
+        clamped / 60,
+        clamped % 60,
+        true,
+    ).show()
+}
+
+/** Shared quick-pause timer card used in both [GateSettingsScreen] and [GateScheduleScreen]. */
+@Composable
+private fun QuickPauseCard(
+    store: Store,
+    scheduleStatus: GateScheduleStatus,
+    nowMs: Long,
+    showExtendWhenPaused: Boolean,
+    onScheduleChanged: () -> Unit,
+) {
+    val context = LocalContext.current
+    val isPaused = scheduleStatus.reason == GateScheduleReason.PAUSED
+    SectionCard(highlighted = isPaused) {
+        Text("Schnell-Pause (Timer)", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = AppColors.TextPrimary)
+        if (isPaused) {
+            Text(
+                "App-Sperre pausiert ${formatPauseUntilLabel(scheduleStatus.pauseUntilEpochMs, nowMs)}",
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = AppColors.AccentGold,
+            )
+            if (showExtendWhenPaused) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    ChipButton(
+                        label = "+30 Min.",
+                        selected = false,
+                        onClick = {
+                            store.pauseGateForMinutes(30, scheduleStatus.pauseUntilEpochMs)
+                            GateService.cancelActiveRedirect()
+                            onScheduleChanged()
+                        },
+                        modifier = Modifier.weight(1f),
+                    )
+                    ChipButton(
+                        label = "+1 Std.",
+                        selected = false,
+                        onClick = {
+                            store.pauseGateForMinutes(60, scheduleStatus.pauseUntilEpochMs)
+                            GateService.cancelActiveRedirect()
+                            onScheduleChanged()
+                        },
+                        modifier = Modifier.weight(1f),
+                    )
+                    ChipButton(
+                        label = "Bis Uhrzeit",
+                        selected = false,
+                        onClick = {
+                            val endDt = LocalDateTime.ofInstant(
+                                Instant.ofEpochMilli(scheduleStatus.pauseUntilEpochMs),
+                                ZoneId.systemDefault(),
+                            )
+                            showTimePicker(context, endDt.hour * 60 + endDt.minute) { picked ->
+                                store.pauseGateUntilTime(picked / 60, picked % 60)
+                                GateService.cancelActiveRedirect()
+                                onScheduleChanged()
+                            }
+                        },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+            Button(
+                onClick = {
+                    store.clearGatePause()
+                    onScheduleChanged()
+                },
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Pause beenden (sofort sperren)", fontWeight = FontWeight.SemiBold)
+            }
+        } else {
+            Text(
+                "Öffnet gesperrte Apps vorübergehend ohne Herausforderung (z. B. spontan auf der Arbeit).",
+                fontSize = 12.sp,
+                color = AppColors.TextSecondary,
+            )
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                listOf(30 to "30 Min.", 60 to "1 Std.", 120 to "2 Std.").forEach { (mins, label) ->
+                    ChipButton(
+                        label = label,
+                        selected = false,
+                        onClick = {
+                            store.pauseGateForMinutes(mins)
+                            GateService.cancelActiveRedirect()
+                            onScheduleChanged()
+                        },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+            OutlinedButton(
+                onClick = {
+                    val nowDt = LocalDateTime.ofInstant(Instant.ofEpochMilli(nowMs), ZoneId.systemDefault())
+                    val defaultMinute = ((nowDt.hour + 1) % 24) * 60
+                    showTimePicker(context, defaultMinute) { picked ->
+                        store.pauseGateUntilTime(picked / 60, picked % 60)
+                        GateService.cancelActiveRedirect()
+                        onScheduleChanged()
+                    }
+                },
+                shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(1.dp, AppColors.BorderSubtle),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Icon(AppIcons.Clock, contentDescription = null, tint = AppColors.AccentGold, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Bis Uhrzeit pausieren…")
+            }
+        }
+    }
+}
+
+/** Manages quick-pause timer and recurring weekly block/free time slots. */
+@Composable
+private fun ColumnScope.GateScheduleScreen(
+    store: Store,
+    scheduleStatus: GateScheduleStatus,
+    scheduleRevision: Int,
+    nowMs: Long,
+    onAddSlot: () -> Unit,
+    onEditSlot: (String) -> Unit,
+    onScheduleChanged: () -> Unit,
+    onBack: () -> Unit,
+) {
+    var slots by remember(scheduleRevision) { mutableStateOf(store.gateTimeSlots) }
+    var scheduleEnabled by remember(scheduleRevision) { mutableStateOf(store.gateScheduleEnabled) }
+    var deleteCandidate by remember { mutableStateOf<GateTimeSlot?>(null) }
+
+    fun persistSlots(nextSlots: List<GateTimeSlot>) {
+        slots = nextSlots
+        store.gateTimeSlots = nextSlots
+        onScheduleChanged()
+    }
+
+    fun addPresetSlot(label: String, kind: GateSlotKind, startMinute: Int, endMinute: Int, days: Set<Int>) {
+        val created = GateTimeSlot(
+            id = "s_${System.currentTimeMillis()}_${slots.size}",
+            label = label,
+            kind = kind,
+            startMinute = startMinute,
+            endMinute = endMinute,
+            daysOfWeek = days,
+            enabled = true,
+        )
+        store.gateScheduleEnabled = true
+        scheduleEnabled = true
+        persistSlots(slots + created)
+    }
+
+    deleteCandidate?.let { slot ->
+        ConfirmDeleteDialog(
+            title = "Zeitfenster löschen?",
+            message = "„${slot.displayLabel()}“ (${slot.formatTimeRange()}) wird entfernt.",
+            onConfirm = {
+                persistSlots(slots.filterNot { it.id == slot.id })
+                deleteCandidate = null
+            },
+            onDismiss = { deleteCandidate = null },
+        )
+    }
+
+    SubScreenTopBar(title = "Zeitplan & Pause", onBack = onBack)
+
+    LazyColumn(
+        modifier = Modifier.weight(1f),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        item {
+            SectionCard(highlighted = true) {
+                val statusTint = if (scheduleStatus.enforced) Good else AppColors.AccentGold
+                val statusIcon = if (scheduleStatus.enforced) AppIcons.Lock else AppIcons.Clock
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Icon(statusIcon, contentDescription = null, tint = statusTint, modifier = Modifier.size(20.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(scheduleHeadline(scheduleStatus, nowMs), fontSize = 15.sp, fontWeight = FontWeight.Bold, color = statusTint)
+                        Text(scheduleSubline(scheduleStatus, nowMs), fontSize = 12.sp, color = AppColors.TextSecondary)
+                    }
+                }
+            }
+        }
+
+        item {
+            QuickPauseCard(
+                store = store,
+                scheduleStatus = scheduleStatus,
+                nowMs = nowMs,
+                showExtendWhenPaused = true,
+                onScheduleChanged = onScheduleChanged,
+            )
+        }
+
+        item {
+            SectionCard {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "Wochen-Zeitplan (Timeslots)",
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = AppColors.TextPrimary,
+                        modifier = Modifier.weight(1f),
+                    )
+                    if (slots.isNotEmpty()) {
+                        Switch(
+                            checked = scheduleEnabled,
+                            onCheckedChange = { checked ->
+                                scheduleEnabled = checked
+                                store.gateScheduleEnabled = checked
+                                onScheduleChanged()
+                            },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = AppColors.OnAccent,
+                                checkedTrackColor = AppColors.AccentGold,
+                            ),
+                        )
+                    }
+                }
+                val hasActiveFree = scheduleEnabled && slots.any { it.enabled && it.kind == GateSlotKind.FREE }
+                val hasActiveBlock = scheduleEnabled && slots.any { it.enabled && it.kind == GateSlotKind.BLOCK }
+                val explanation = when {
+                    slots.isEmpty() ->
+                        "Lege wiederkehrende Zeiten fest: z. B. „Ohne Sperre“ während der Arbeitszeit oder „Gesperrt“-Timeslots für Feierabend & Wochenende."
+                    !scheduleEnabled ->
+                        "Zeitplan ist pausiert – gesperrte Apps werden rund um die Uhr abgefangen."
+                    hasActiveFree && hasActiveBlock ->
+                        "Gesperrt in „Gesperrt“-Zeiten – „Ohne Sperre“-Fenster haben dabei Vorrang (z. B. Arbeit)."
+                    hasActiveFree ->
+                        "Nur außerhalb deiner „Ohne Sperre“-Zeiten wird gesperrt."
+                    hasActiveBlock ->
+                        "Nur innerhalb deiner „Gesperrt“-Zeiten wird gesperrt – außerhalb öffnen Apps frei."
+                    else ->
+                        "Alle Zeitfenster sind einzeln ausgeschaltet – die App-Sperre greift aktuell immer."
+                }
+                Text(explanation, fontSize = 12.sp, color = AppColors.TextSecondary)
+
+                Button(
+                    onClick = onAddSlot,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(AppIcons.Plus, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Zeitfenster hinzufügen", fontWeight = FontWeight.SemiBold)
+                }
+
+                if (slots.isEmpty()) {
+                    HorizontalDivider(color = AppColors.BorderSubtle.copy(alpha = 0.65f))
+                    Text("Schnell-Vorlagen", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = AppColors.TextSecondary)
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        OutlinedButton(
+                            onClick = { addPresetSlot("Arbeit", GateSlotKind.FREE, 8 * 60, 17 * 60, GateTimeSlot.WEEKDAYS) },
+                            shape = RoundedCornerShape(10.dp),
+                            border = BorderStroke(1.dp, AppColors.BorderSubtle),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text("Arbeit frei (Mo–Fr 08:00–17:00)", fontSize = 13.sp)
+                        }
+                        OutlinedButton(
+                            onClick = { addPresetSlot("Feierabend", GateSlotKind.BLOCK, 17 * 60, 23 * 60, GateTimeSlot.WEEKDAYS) },
+                            shape = RoundedCornerShape(10.dp),
+                            border = BorderStroke(1.dp, AppColors.BorderSubtle),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text("Feierabend gesperrt (Mo–Fr 17:00–23:00)", fontSize = 13.sp)
+                        }
+                        OutlinedButton(
+                            onClick = { addPresetSlot("Wochenende", GateSlotKind.BLOCK, 9 * 60, 23 * 60, GateTimeSlot.WEEKEND) },
+                            shape = RoundedCornerShape(10.dp),
+                            border = BorderStroke(1.dp, AppColors.BorderSubtle),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text("Wochenende gesperrt (Sa–So 09:00–23:00)", fontSize = 13.sp)
+                        }
+                    }
+                }
+            }
+        }
+
+        items(slots, key = { it.id }) { slot ->
+            val isMatchingNow = scheduleEnabled && slot.enabled && scheduleStatus.matchingSlot?.id == slot.id
+            val kindBg = if (slot.kind == GateSlotKind.BLOCK) AppColors.GoodSoft else AppColors.AccentGoldSoft
+            val kindFg = if (slot.kind == GateSlotKind.BLOCK) Good else AppColors.AccentGold
+            SectionCard(highlighted = isMatchingNow, padding = PaddingValues(14.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().clickable { onEditSlot(slot.id) },
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            Surface(shape = RoundedCornerShape(7.dp), color = kindBg) {
+                                Text(
+                                    slot.kind.label,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = kindFg,
+                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
+                                )
+                            }
+                            if (isMatchingNow) {
+                                Text("· Jetzt aktiv", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = kindFg)
+                            } else if (!scheduleEnabled || !slot.enabled) {
+                                Text("· Aus", fontSize = 12.sp, color = AppColors.TextSecondary)
+                            }
+                        }
+                        Text(
+                            slot.formatTimeRange() + if (slot.wrapsOvernight) " (+1 Tag)" else "",
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (slot.enabled) AppColors.TextPrimary else AppColors.TextSecondary,
+                        )
+                        Text(
+                            "${slot.displayLabel()} · ${GateTimeSlot.formatDays(slot.daysOfWeek)}",
+                            fontSize = 13.sp,
+                            color = AppColors.TextSecondary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    Switch(
+                        checked = slot.enabled,
+                        onCheckedChange = { checked ->
+                            persistSlots(slots.map { if (it.id == slot.id) it.copy(enabled = checked) else it })
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = AppColors.OnAccent,
+                            checkedTrackColor = AppColors.AccentGold,
+                        ),
+                    )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    TextButton(
+                        onClick = { onEditSlot(slot.id) },
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                    ) {
+                        Icon(AppIcons.Edit, contentDescription = null, tint = AppColors.AccentGold, modifier = Modifier.size(15.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Bearbeiten", fontSize = 12.sp, color = AppColors.AccentGold)
+                    }
+                    IconButton(onClick = { deleteCandidate = slot }, modifier = Modifier.size(36.dp)) {
+                        Icon(AppIcons.Trash, contentDescription = "Löschen", tint = Bad, modifier = Modifier.size(18.dp))
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** Creates or edits a single [GateTimeSlot] with 24h time pickers and weekday selection. */
+@Composable
+private fun ColumnScope.GateSlotEditorScreen(
+    store: Store,
+    slotId: String?,
+    onSaved: () -> Unit,
+    onDeleted: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    val context = LocalContext.current
+    val existingSlots = remember(slotId) { store.gateTimeSlots }
+    val existing = remember(slotId, existingSlots) {
+        slotId?.let { id -> existingSlots.firstOrNull { it.id == id } }
+    }
+
+    var kind by remember(slotId) { mutableStateOf(existing?.kind ?: GateSlotKind.FREE) }
+    var label by remember(slotId) { mutableStateOf(existing?.label ?: "") }
+    var startMinute by remember(slotId) { mutableIntStateOf(existing?.startMinute ?: 8 * 60) }
+    var endMinute by remember(slotId) { mutableIntStateOf(existing?.endMinute ?: 17 * 60) }
+    var days by remember(slotId) { mutableStateOf(existing?.daysOfWeek ?: GateTimeSlot.WEEKDAYS) }
+    var showDeleteDialog by remember { mutableStateOf(false) }
+
+    if (showDeleteDialog && existing != null) {
+        ConfirmDeleteDialog(
+            title = "Zeitfenster löschen?",
+            message = "„${existing.displayLabel()}“ (${existing.formatTimeRange()}) wird entfernt.",
+            onConfirm = {
+                store.gateTimeSlots = existingSlots.filterNot { it.id == existing.id }
+                showDeleteDialog = false
+                onDeleted()
+            },
+            onDismiss = { showDeleteDialog = false },
+        )
+    }
+
+    SubScreenTopBar(
+        title = if (existing == null) "Neues Zeitfenster" else "Zeitfenster bearbeiten",
+        onBack = onCancel,
+    )
+
+    Column(
+        modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        SectionCard {
+            Text("Art des Zeitfensters", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = AppColors.TextPrimary)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                GateSlotKind.entries.forEach { option ->
+                    ChipButton(
+                        label = option.label,
+                        selected = option == kind,
+                        onClick = { kind = option },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+            Text(
+                when (kind) {
+                    GateSlotKind.BLOCK ->
+                        "Während dieser Zeit greift die App-Sperre (mit deinen Aufgaben, Akkorden & Weiterleitungen)."
+                    GateSlotKind.FREE ->
+                        "Während dieser Zeit öffnen gesperrte Apps direkt ohne Sperre (z. B. auf der Arbeit) – hat Vorrang vor Sperr-Zeiten."
+                },
+                fontSize = 12.sp,
+                color = AppColors.TextSecondary,
+            )
+        }
+
+        SectionCard {
+            Text("Name (optional)", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = AppColors.TextPrimary)
+            OutlinedTextField(
+                value = label,
+                onValueChange = { label = it },
+                placeholder = { Text("z. B. Arbeit, Feierabend, Abends…") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+
+        SectionCard {
+            Text("Uhrzeit", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = AppColors.TextPrimary)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TimeFieldButton(
+                    caption = "Von",
+                    minute = startMinute,
+                    onClick = { showTimePicker(context, startMinute) { startMinute = it } },
+                    modifier = Modifier.weight(1f),
+                )
+                TimeFieldButton(
+                    caption = "Bis",
+                    minute = endMinute,
+                    onClick = { showTimePicker(context, endMinute) { endMinute = it } },
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            val timeNote = when {
+                startMinute == endMinute ->
+                    "Start- und Endzeit gleich = Ganztägig an den gewählten Tagen."
+                startMinute > endMinute && endMinute == 0 ->
+                    "Endet um Mitternacht (${GateTimeSlot.formatMinute(startMinute)} – 24:00 Uhr)."
+                startMinute > endMinute ->
+                    "Läuft über Mitternacht bis ${GateTimeSlot.formatMinute(endMinute)} am Folgetag."
+                else -> null
+            }
+            if (timeNote != null) {
+                Text(timeNote, fontSize = 12.sp, color = AppColors.AccentGold)
+            }
+
+            val presets = listOf(
+                Triple("08:00–17:00", 8 * 60, 17 * 60),
+                Triple("17:00–23:00", 17 * 60, 23 * 60),
+                Triple("22:00–07:00", 22 * 60, 7 * 60),
+                Triple("Ganztägig", 0, 0),
+            )
+            presets.chunked(2).forEach { row ->
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    row.forEach { (title, s, e) ->
+                        ChipButton(
+                            label = title,
+                            selected = startMinute == s && endMinute == e,
+                            onClick = {
+                                startMinute = s
+                                endMinute = e
+                            },
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                }
+            }
+        }
+
+        SectionCard {
+            Text("Wochentage", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = AppColors.TextPrimary)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                ChipButton(
+                    label = "Täglich",
+                    selected = days == GateTimeSlot.ALL_DAYS,
+                    onClick = { days = GateTimeSlot.ALL_DAYS },
+                    modifier = Modifier.weight(1f),
+                )
+                ChipButton(
+                    label = "Mo–Fr",
+                    selected = days == GateTimeSlot.WEEKDAYS,
+                    onClick = { days = GateTimeSlot.WEEKDAYS },
+                    modifier = Modifier.weight(1f),
+                )
+                ChipButton(
+                    label = "Sa–So",
+                    selected = days == GateTimeSlot.WEEKEND,
+                    onClick = { days = GateTimeSlot.WEEKEND },
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                (1..7).forEach { day ->
+                    val selected = day in days
+                    Surface(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(40.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable { days = if (selected) days - day else days + day },
+                        shape = RoundedCornerShape(10.dp),
+                        color = if (selected) AppColors.AccentGold else AppColors.SurfaceCardAlt,
+                        border = BorderStroke(1.dp, if (selected) AppColors.AccentGold else AppColors.BorderSubtle),
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Text(
+                                text = GateTimeSlot.dayShortLabel(day),
+                                fontSize = 13.sp,
+                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                color = if (selected) AppColors.OnAccent else AppColors.TextPrimary,
+                                textAlign = TextAlign.Center,
+                                maxLines = 1,
+                                softWrap = false,
+                            )
+                        }
+                    }
+                }
+            }
+            if (days.isEmpty()) {
+                Text("Bitte mindestens einen Wochentag wählen.", fontSize = 12.sp, color = Bad)
+            }
+        }
+    }
+
+    Spacer(Modifier.height(10.dp))
+    Button(
+        onClick = {
+            val saved = GateTimeSlot(
+                id = existing?.id ?: "s_${System.currentTimeMillis()}_${existingSlots.size}",
+                label = label.trim(),
+                kind = kind,
+                startMinute = startMinute,
+                endMinute = endMinute,
+                daysOfWeek = days,
+                enabled = existing?.enabled ?: true,
+            )
+            store.gateScheduleEnabled = true
+            store.gateTimeSlots = if (existing == null) {
+                existingSlots + saved
+            } else {
+                existingSlots.map { if (it.id == existing.id) saved else it }
+            }
+            onSaved()
+        },
+        enabled = days.isNotEmpty(),
+        shape = RoundedCornerShape(12.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Text("Speichern", fontWeight = FontWeight.SemiBold)
+    }
+    if (existing != null) {
+        Spacer(Modifier.height(6.dp))
+        OutlinedButton(
+            onClick = { showDeleteDialog = true },
+            shape = RoundedCornerShape(12.dp),
+            border = BorderStroke(1.dp, Bad.copy(alpha = 0.6f)),
+            colors = ButtonDefaults.outlinedButtonColors(contentColor = Bad),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("Zeitfenster löschen", fontWeight = FontWeight.SemiBold)
+        }
+    }
+}
+
+@Composable
+private fun TimeFieldButton(
+    caption: String,
+    minute: Int,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(12.dp),
+        color = AppColors.SurfaceCardAlt,
+        border = BorderStroke(1.dp, AppColors.BorderSubtle),
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Text(caption, fontSize = 12.sp, color = AppColors.TextSecondary)
+            Text(
+                GateTimeSlot.formatMinute(minute),
+                fontSize = 22.sp,
+                fontWeight = FontWeight.Bold,
+                color = AppColors.AccentGold,
+            )
+        }
+    }
 }
