@@ -232,4 +232,16 @@ object AppIcons {
             strokePath(14f to 14f, 20f to 14f, 20f to 20f, 14f to 20f, close = true)
         }
     }
+
+    /** Clock icon representing gate timers and weekly schedules. */
+    val Clock: ImageVector by lazy {
+        strokeIcon("Clock") {
+            path(stroke = Stroke, strokeLineWidth = 2f, strokeLineCap = StrokeCap.Round, strokeLineJoin = StrokeJoin.Round) {
+                moveTo(21f, 12f)
+                arcTo(9f, 9f, 0f, true, true, 3f, 12f)
+                arcTo(9f, 9f, 0f, true, true, 21f, 12f)
+            }
+            strokePath(12f to 7f, 12f to 12f, 15.5f to 14f)
+        }
+    }
 }

@@ -2,6 +2,8 @@ package com.example.holzaffe
 
 import android.content.Context
 import android.content.SharedPreferences
+import java.time.LocalDateTime
+import java.time.ZonedDateTime
 
 /** All persisted state: scores, gate settings, temporary unlocks. */
 class Store(context: Context) : Scores {
@@ -196,4 +198,54 @@ class Store(context: Context) : Scores {
 
     fun isUnlocked(pkg: String): Boolean =
         System.currentTimeMillis() < prefs.getLong("unlock:$pkg", 0)
+
+    /** Whether recurring time slots are applied (default true; empty list stays always blocked). */
+    var gateScheduleEnabled: Boolean
+        get() = prefs.getBoolean("gateScheduleEnabled", true)
+        set(v) = prefs.edit().putBoolean("gateScheduleEnabled", v).apply()
+
+    /** Recurring weekly time slots for scheduled block/free periods. */
+    var gateTimeSlots: List<GateTimeSlot>
+        get() = GateTimeSlotCodec.decode(prefs.getString("gateTimeSlots", "").orEmpty())
+        set(v) = prefs.edit().putString("gateTimeSlots", GateTimeSlotCodec.encode(v)).apply()
+
+    /** Epoch timestamp (ms) until which the app gate is temporarily paused (0 = not paused). */
+    var gatePauseUntilMs: Long
+        get() = prefs.getLong("gatePauseUntilMs", 0L)
+        set(v) = prefs.edit().putLong("gatePauseUntilMs", v).apply()
+
+    fun pauseGateForMinutes(minutes: Int, nowEpochMs: Long = System.currentTimeMillis()) {
+        gatePauseUntilMs = nowEpochMs + minutes.coerceAtLeast(1) * 60_000L
+    }
+
+    fun pauseGateUntilTime(hour: Int, minute: Int, now: ZonedDateTime = ZonedDateTime.now()) {
+        val h = hour.coerceIn(0, 23)
+        val m = minute.coerceIn(0, 59)
+        var target = now.withHour(h).withMinute(m).withSecond(0).withNano(0)
+        if (!target.isAfter(now)) {
+            target = target.plusDays(1)
+        }
+        gatePauseUntilMs = target.toInstant().toEpochMilli()
+    }
+
+    fun clearGatePause() {
+        gatePauseUntilMs = 0L
+    }
+
+    fun gateScheduleStatus(
+        now: LocalDateTime = LocalDateTime.now(),
+        nowEpochMs: Long = System.currentTimeMillis(),
+    ): GateScheduleStatus {
+        val minuteOfDay = now.hour * 60 + now.minute
+        return GateScheduleEvaluator.evaluate(
+            scheduleEnabled = gateScheduleEnabled,
+            slots = gateTimeSlots,
+            dayOfWeek = now.dayOfWeek.value,
+            minuteOfDay = minuteOfDay,
+            nowEpochMs = nowEpochMs,
+            pauseUntilEpochMs = gatePauseUntilMs,
+        )
+    }
+
+    fun isGateCurrentlyEnforced(): Boolean = gateScheduleStatus().enforced
 }
